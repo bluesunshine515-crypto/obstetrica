@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Obstetrica · 老師後台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+:root {
+  --ink: #1a1d1f;
+  --ink-soft: #4a5258;
+  --ink-mute: #8b939a;
+  --paper: #faf8f3;
+  --card: #ffffff;
+  --line: #e6e0d4;
+  --gold: #b08d4f;
+  --rust: #a3522e;
+  --teal: #2e6e7a;
+  --green: #4a7c59;
+  --red: #c0463a;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', 'Noto Serif TC', system-ui, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+header {
+  background: var(--ink);
+  color: var(--paper);
+  padding: 16px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.brand { font-family: 'Noto Serif TC', serif; font-weight: 600; font-size: 20px; }
+.brand-sub { font-size: 13px; opacity: 0.7; margin-left: 8px; font-weight: 400; }
+.user-area { font-size: 14px; display: flex; gap: 12px; align-items: center; }
+.user-area a, .user-area button {
+  color: var(--paper); background: none; border: 1px solid rgba(250,248,243,0.3);
+  padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px;
+  text-decoration: none;
+}
+.user-area button:hover, .user-area a:hover { background: rgba(250,248,243,0.1); }
+main { max-width: 1280px; margin: 0 auto; padding: 24px; }
+.controls {
+  display: flex; gap: 12px; flex-wrap: wrap; align-items: end;
+  background: var(--card); padding: 16px; border-radius: 8px;
+  border: 1px solid var(--line); margin-bottom: 20px;
+}
+.ctrl-group { display: flex; flex-direction: column; gap: 4px; }
+.ctrl-group label { font-size: 12px; color: var(--ink-soft); font-weight: 500; }
+.ctrl-group select, .ctrl-group input {
+  padding: 8px 12px; border: 1px solid var(--line); border-radius: 4px;
+  font: inherit; background: white; min-width: 180px;
+}
+.btn {
+  padding: 8px 16px; background: var(--ink); color: var(--paper);
+  border: none; border-radius: 4px; cursor: pointer; font: inherit; font-weight: 500;
+}
+.btn:hover { background: #2a2d2f; }
+.btn-secondary { background: var(--card); color: var(--ink); border: 1px solid var(--line); }
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.kpi {
+  background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 18px;
+}
+.kpi-label { font-size: 12px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.5px; }
+.kpi-value { font-size: 32px; font-weight: 600; margin-top: 4px; font-family: 'Noto Serif TC', serif; }
+.kpi-sub { font-size: 12px; color: var(--ink-mute); margin-top: 2px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+.grid-2 > * { min-width: 0; }
+@media (max-width: 980px) { .grid-2 { grid-template-columns: 1fr; } }
+.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+  padding: 20px; margin-bottom: 20px;
+}
+.card-title { font-size: 16px; font-weight: 600; margin-bottom: 4px; font-family: 'Noto Serif TC', serif; }
+.card-sub { font-size: 13px; color: var(--ink-soft); margin-bottom: 16px; }
+.chart-wrap { position: relative; }
+.chart-wrap canvas { max-width: 100%; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--ink-soft); font-size: 12px; text-transform: uppercase; letter-spacing: 0.3px; background: #fafafa; }
+tbody tr:hover { background: #fafafa; }
+.tag-pre { color: var(--teal); font-size: 12px; font-weight: 500; }
+.tag-post { color: var(--gold); font-size: 12px; font-weight: 500; }
+.tag-practice { color: var(--ink-mute); font-size: 12px; font-weight: 500; }
+.tag-correct { color: var(--green); font-weight: 600; }
+.tag-wrong { color: var(--red); font-weight: 600; }
+.empty {
+  text-align: center; padding: 40px; color: var(--ink-mute);
+  font-style: italic;
+}
+/* modal */
+.modal-bg {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+  display: none; align-items: center; justify-content: center; z-index: 100;
+}
+.modal-bg.active { display: flex; }
+.modal-box {
+  background: var(--card); border-radius: 8px; padding: 28px; width: 90%; max-width: 420px;
+}
+.modal-box h2 { font-family: 'Noto Serif TC', serif; margin-bottom: 8px; }
+.modal-box p { color: var(--ink-soft); font-size: 14px; margin-bottom: 16px; }
+.modal-box input {
+  width: 100%; padding: 10px 12px; border: 1px solid var(--line);
+  border-radius: 4px; font: inherit; margin-bottom: 12px;
+}
+.modal-box button { width: 100%; padding: 12px; background: var(--ink); color: var(--paper); border: none; border-radius: 4px; cursor: pointer; font: inherit; font-weight: 500; }
+.status-msg { font-size: 13px; color: var(--ink-soft); margin-top: 12px; line-height: 1.5; }
+.deny-card { text-align: center; padding: 60px 20px; }
+.deny-card h2 { font-family: 'Noto Serif TC', serif; margin-bottom: 12px; }
+.deny-card p { color: var(--ink-soft); margin-bottom: 16px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <span class="brand">Obstetrica</span>
+    <span class="brand-sub">老師後台 · TSGH OB/GYN Residency</span>
+  </div>
+  <div class="user-area" id="userArea"></div>
+</header>
+
+<main id="mainContent">
+  <div class="empty" id="loadingMsg">載入中…</div>
+</main>
+
+<!-- Login modal -->
+<div class="modal-bg" id="loginModal">
+  <div class="modal-box">
+    <h2>老師登入</h2>
+    <p>輸入老師 email，我們會寄一封 Magic Link 給你。</p>
+    <input type="email" id="loginEmail" placeholder="老師 email" autocomplete="email"/>
+    <button onclick="doLogin()">寄送登入連結</button>
+    <div class="status-msg" id="loginStatus"></div>
+  </div>
+</div>
+
+<script>
+// ===== SUPABASE =====
+const SUPABASE_URL = 'https://faeqleeuisevhuqveilx.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_aCZ6yh9Mi_jX0l4E8gHSqQ_wAMHYfaj';
+const supa = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+});
+const REDIRECT_TO = window.location.origin + window.location.pathname;
+
+// ===== 8-axis category grouping =====
+const CATEGORY_GROUPS = {
+  '婦科-生殖內分泌/不孕': ['婦科-生殖內分泌','婦科-不孕症','婦科-青春期/異常出血'],
+  '婦科-良性腫瘤/異常':   ['婦科-子宮肌瘤','婦科-子宮內膜異位','婦科-卵巢腫瘤','婦科-性發育異常','婦科-生殖道發育'],
+  '婦科-手術/感染/泌尿': ['婦科-微創手術','婦科-手術解剖','婦科-骨盆腔發炎','婦科-感染','婦科-泌尿婦科'],
+  '婦癌':                 ['婦癌-子宮頸癌','婦癌-子宮頸癌前病變','婦癌-子宮內膜癌','婦癌-卵巢癌','婦癌-生殖細胞瘤'],
+  '產科-產前/胎兒':       ['產科-產前檢查','產科-產前保健','產科-胎兒生理','產科-遺傳學','產科-妊娠生理變化','產科-胎盤生理'],
+  '產科-妊娠併發症':       ['產科-妊娠糖尿病','產科-高血壓疾病','產科-妊娠感染','產科-妊娠合併症','產科-早期破水','產科-過期妊娠','產科-子宮外孕','產科-流產','產科-人工流產'],
+  '產科-產時/分娩':       ['產科-剖腹產','產科-胎位','產科-產科解剖','產科-產科感染'],
+  '產科-產後':            ['產科-產後感染','產科-產後哺乳','產科-會陰裂傷'],
+};
+const CAT_TO_GROUP = {};
+for (const [g, cats] of Object.entries(CATEGORY_GROUPS)) cats.forEach(c => CAT_TO_GROUP[c] = g);
+function groupOf(cat) {
+  if (!cat) return '其他';
+  if (CAT_TO_GROUP[cat]) return CAT_TO_GROUP[cat];
+  if (cat.startsWith('婦癌')) return '婦癌';
+  if (cat.startsWith('婦科')) return '婦科-良性腫瘤/異常';
+  if (cat.startsWith('產科')) return '產科-妊娠併發症';
+  return '其他';
+}
+const GROUP_ORDER = Object.keys(CATEGORY_GROUPS);
+
+// ===== STATE =====
+let me = null;       // current logged-in teacher row
+let allAttempts = [];
+let allStudents = [];
+let allSessions = [];
+let charts = {};
+
+// ===== AUTH =====
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function showLogin() {
+  document.getElementById('loginModal').classList.add('active');
+  document.getElementById('mainContent').innerHTML = '';
+  document.getElementById('userArea').innerHTML = '';
+}
+async function doLogin() {
+  const email = document.getElementById('loginEmail').value.trim();
+  const status = document.getElementById('loginStatus');
+  if (!email || !email.includes('@')) { alert('請輸入 email'); return; }
+  status.textContent = '寄送中…';
+  const { error } = await supa.auth.signInWithOtp({
+    email, options: { emailRedirectTo: REDIRECT_TO }
+  });
+  if (error) { status.textContent = '寄送失敗：' + error.message; return; }
+  status.innerHTML = '✉️ 已寄出！請到 <b>' + esc(email) + '</b> 收信，點開連結即可登入。';
+}
+async function logout() {
+  await supa.auth.signOut();
+  location.reload();
+}
+function showDenied(reason) {
+  document.getElementById('mainContent').innerHTML = `
+    <div class="deny-card card">
+      <h2>無權限存取</h2>
+      <p>${esc(reason)}</p>
+      <button class="btn" onclick="logout()">登出並切換帳號</button>
+    </div>`;
+}
+
+// ===== BOOT =====
+async function boot() {
+  const { data: { session } } = await supa.auth.getSession();
+  if (!session) { showLogin(); return; }
+  // fetch self student row
+  const { data: row, error } = await supa.from('students').select('*').eq('id', session.user.id).maybeSingle();
+  if (error || !row) {
+    showDenied('找不到使用者資料：' + (error?.message ?? '請先到主站完成首次登入'));
+    return;
+  }
+  if (row.role !== 'teacher') {
+    showDenied('此頁面僅限老師。你目前的身份是「學員」。');
+    return;
+  }
+  me = row;
+  document.getElementById('userArea').innerHTML = `
+    <span>👨‍🏫 ${esc(me.name || me.email)}</span>
+    <a href="../">學員端</a>
+    <button onclick="logout()">登出</button>`;
+  document.getElementById('loginModal').classList.remove('active');
+  await loadData();
+  renderAll();
+}
+
+// ===== DATA =====
+async function loadData() {
+  document.getElementById('mainContent').innerHTML = '<div class="empty">載入資料中…</div>';
+  const [aRes, sRes, eRes] = await Promise.all([
+    supa.from('attempts').select('*').order('attempted_at', { ascending: false }),
+    supa.from('students').select('*').order('name'),
+    supa.from('exam_sessions').select('*').order('created_at')
+  ]);
+  if (aRes.error || sRes.error || eRes.error) {
+    document.getElementById('mainContent').innerHTML = '<div class="empty">載入失敗：' + esc(aRes.error?.message || sRes.error?.message || eRes.error?.message) + '</div>';
+    throw new Error('load failed');
+  }
+  allAttempts = aRes.data;
+  allStudents = sRes.data;
+  allSessions = eRes.data;
+}
+
+// ===== RENDER =====
+function renderAll() {
+  const studentMap = Object.fromEntries(allStudents.map(s => [s.id, s]));
+  const sessionMap = Object.fromEntries(allSessions.map(s => [s.id, s]));
+  const studentList = allStudents.filter(s => s.role === 'student');
+  const sessionOptions = allSessions.map(s => `<option value="${s.id}">${esc(s.name)} · ${esc(s.phase)}</option>`).join('');
+  const studentOptions = ['<option value="">— 全部 —</option>']
+    .concat(studentList.map(s => `<option value="${s.id}">${esc(s.name || s.email)} (${esc(s.year || '?')})</option>`))
+    .join('');
+
+  document.getElementById('mainContent').innerHTML = `
+    <div class="controls">
+      <div class="ctrl-group">
+        <label>Session 篩選</label>
+        <select id="filterSession">
+          <option value="">— 全部 —</option>
+          ${sessionOptions}
+        </select>
+      </div>
+      <div class="ctrl-group">
+        <label>學生（雷達圖用）</label>
+        <select id="filterStudent">${studentOptions}</select>
+      </div>
+      <button class="btn btn-secondary" onclick="loadData().then(renderAll)">🔄 重新載入</button>
+    </div>
+
+    <div class="kpi-row" id="kpiRow"></div>
+
+    <div class="card">
+      <div class="card-title">① 班級 · 各分類平均對題率</div>
+      <div class="card-sub">所有學生在 8 大組別的平均答對比例（依目前 session 篩選）</div>
+      <div class="chart-wrap"><canvas id="chartCategoryAvg" height="120"></canvas></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">② 個別學生 · 8 軸雷達圖</div>
+      <div class="card-sub">選擇上方「學生」下拉選單後即時更新</div>
+      <div class="chart-wrap"><canvas id="chartRadar" height="120"></canvas></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">③ 前測 vs 後測 · 成對柱狀圖</div>
+      <div class="card-sub">同一批參加前後測的學生在 8 組的平均對題率比較</div>
+      <div class="chart-wrap"><canvas id="chartPrePost" height="120"></canvas></div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">④ 錯題 Top 10</div>
+        <div class="card-sub">依錯誤次數排序（依目前 session 篩選）</div>
+        <div id="topWrongTable"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">⑤ 答題時間 vs 對錯</div>
+        <div class="card-sub">每個點 = 一次作答（綠 = 對、紅 = 錯）</div>
+        <div class="chart-wrap"><canvas id="chartScatter" height="180"></canvas></div>
+      </div>
+    </div>
+  `;
+
+  const filterSession = document.getElementById('filterSession');
+  const filterStudent = document.getElementById('filterStudent');
+  const update = () => renderCharts(filterSession.value, filterStudent.value, studentMap, sessionMap);
+  filterSession.addEventListener('change', update);
+  filterStudent.addEventListener('change', update);
+  update();
+}
+
+function renderCharts(sessionId, studentId, studentMap, sessionMap) {
+  // Filter attempts
+  let filtered = allAttempts;
+  if (sessionId) filtered = filtered.filter(a => a.session_id === sessionId);
+
+  // KPIs
+  const totalAttempts = filtered.length;
+  const uniqueStudents = new Set(filtered.map(a => a.student_id)).size;
+  const correctCount = filtered.filter(a => a.is_correct).length;
+  const accPct = totalAttempts > 0 ? (correctCount / totalAttempts * 100).toFixed(1) : '0.0';
+  const sessionsActive = new Set(filtered.map(a => a.session_id)).size;
+  document.getElementById('kpiRow').innerHTML = `
+    <div class="kpi"><div class="kpi-label">總提交筆數</div><div class="kpi-value">${totalAttempts.toLocaleString()}</div><div class="kpi-sub">attempts</div></div>
+    <div class="kpi"><div class="kpi-label">參與學生</div><div class="kpi-value">${uniqueStudents}</div><div class="kpi-sub">人</div></div>
+    <div class="kpi"><div class="kpi-label">總體正確率</div><div class="kpi-value">${accPct}%</div><div class="kpi-sub">${correctCount} 答對</div></div>
+    <div class="kpi"><div class="kpi-label">使用 Sessions</div><div class="kpi-value">${sessionsActive}</div><div class="kpi-sub">/ ${allSessions.length}</div></div>
+  `;
+
+  // 1. Category accuracy (8 groups, horizontal bar)
+  const groupStats = {};
+  GROUP_ORDER.forEach(g => groupStats[g] = { total: 0, correct: 0 });
+  filtered.forEach(a => {
+    const g = groupOf(a.category);
+    if (!groupStats[g]) groupStats[g] = { total: 0, correct: 0 };
+    groupStats[g].total++;
+    if (a.is_correct) groupStats[g].correct++;
+  });
+  const cat1Labels = GROUP_ORDER;
+  const cat1Data = cat1Labels.map(g => groupStats[g].total > 0 ? +(groupStats[g].correct / groupStats[g].total * 100).toFixed(1) : 0);
+  const cat1Counts = cat1Labels.map(g => groupStats[g].total);
+  destroyChart('chartCategoryAvg');
+  charts.chartCategoryAvg = new Chart(document.getElementById('chartCategoryAvg'), {
+    type: 'bar',
+    data: {
+      labels: cat1Labels,
+      datasets: [{
+        label: '平均對題率 (%)',
+        data: cat1Data,
+        backgroundColor: cat1Data.map(v => v >= 70 ? '#4a7c59' : v >= 50 ? '#b08d4f' : '#a3522e'),
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      scales: { x: { min: 0, max: 100, title: { display: true, text: '%' } } },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: (ctx) => `${ctx.parsed.x}% (n=${cat1Counts[ctx.dataIndex]})` } }
+      }
+    }
+  });
+
+  // 2. Radar for selected student
+  let radarLabels = GROUP_ORDER, radarData = new Array(GROUP_ORDER.length).fill(0);
+  let radarTitle = '（請從上方選擇學生）';
+  if (studentId) {
+    const sAttempts = filtered.filter(a => a.student_id === studentId);
+    const sgs = {};
+    GROUP_ORDER.forEach(g => sgs[g] = { total: 0, correct: 0 });
+    sAttempts.forEach(a => {
+      const g = groupOf(a.category);
+      if (!sgs[g]) sgs[g] = { total: 0, correct: 0 };
+      sgs[g].total++;
+      if (a.is_correct) sgs[g].correct++;
+    });
+    radarData = GROUP_ORDER.map(g => sgs[g].total > 0 ? +(sgs[g].correct / sgs[g].total * 100).toFixed(1) : 0);
+    const stu = studentMap[studentId];
+    radarTitle = (stu?.name || stu?.email || '?') + ' · ' + sAttempts.length + ' 筆作答';
+  }
+  destroyChart('chartRadar');
+  charts.chartRadar = new Chart(document.getElementById('chartRadar'), {
+    type: 'radar',
+    data: { labels: radarLabels, datasets: [{ label: radarTitle, data: radarData, backgroundColor: 'rgba(176,141,79,0.2)', borderColor: '#b08d4f', pointBackgroundColor: '#b08d4f' }] },
+    options: { responsive: true, scales: { r: { min: 0, max: 100, ticks: { stepSize: 25 } } } }
+  });
+
+  // 3. Pre vs Post paired bar
+  const preSession = allSessions.find(s => s.phase === 'pretest');
+  const postSession = allSessions.find(s => s.phase === 'posttest');
+  const preStats = {}, postStats = {};
+  GROUP_ORDER.forEach(g => { preStats[g] = { total: 0, correct: 0 }; postStats[g] = { total: 0, correct: 0 }; });
+  allAttempts.forEach(a => {
+    const g = groupOf(a.category);
+    if (preSession && a.session_id === preSession.id)  { preStats[g].total++;  if (a.is_correct) preStats[g].correct++; }
+    if (postSession && a.session_id === postSession.id){ postStats[g].total++; if (a.is_correct) postStats[g].correct++; }
+  });
+  const preData  = GROUP_ORDER.map(g => preStats[g].total  > 0 ? +(preStats[g].correct  / preStats[g].total  * 100).toFixed(1) : 0);
+  const postData = GROUP_ORDER.map(g => postStats[g].total > 0 ? +(postStats[g].correct / postStats[g].total * 100).toFixed(1) : 0);
+  destroyChart('chartPrePost');
+  charts.chartPrePost = new Chart(document.getElementById('chartPrePost'), {
+    type: 'bar',
+    data: {
+      labels: GROUP_ORDER,
+      datasets: [
+        { label: '前測', data: preData,  backgroundColor: '#2e6e7a' },
+        { label: '後測', data: postData, backgroundColor: '#b08d4f' }
+      ]
+    },
+    options: {
+      responsive: true,
+      scales: { y: { min: 0, max: 100, title: { display: true, text: '對題率 %' } } }
+    }
+  });
+
+  // 4. Top 10 wrong
+  const wrongCount = {};
+  filtered.forEach(a => { if (!a.is_correct) wrongCount[a.question_id] = (wrongCount[a.question_id] || 0) + 1; });
+  const top = Object.entries(wrongCount).sort((a,b) => b[1] - a[1]).slice(0, 10);
+  if (top.length === 0) {
+    document.getElementById('topWrongTable').innerHTML = '<div class="empty">暫無錯題資料</div>';
+  } else {
+    const cats = {};
+    filtered.forEach(a => { if (!cats[a.question_id]) cats[a.question_id] = { category: a.category, exam: a.exam }; });
+    document.getElementById('topWrongTable').innerHTML = `
+      <table>
+        <thead><tr><th>題號</th><th>分類</th><th>試卷</th><th>錯誤次數</th></tr></thead>
+        <tbody>
+          ${top.map(([qid, n]) => `
+            <tr>
+              <td><code>${esc(qid)}</code></td>
+              <td>${esc(cats[qid]?.category || '?')}</td>
+              <td>${esc(cats[qid]?.exam || '?')}</td>
+              <td><span class="tag-wrong">${n}</span></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+  }
+
+  // 5. Time vs correctness scatter
+  const correctPts = [], wrongPts = [];
+  filtered.forEach(a => {
+    if (a.time_spent_sec == null) return;
+    const x = Math.min(a.time_spent_sec, 300);
+    const point = { x, y: Math.random() * 0.4 + (a.is_correct ? 0.6 : 0) };
+    (a.is_correct ? correctPts : wrongPts).push(point);
+  });
+  destroyChart('chartScatter');
+  charts.chartScatter = new Chart(document.getElementById('chartScatter'), {
+    type: 'scatter',
+    data: { datasets: [
+      { label: '答對', data: correctPts, backgroundColor: 'rgba(74,124,89,0.6)', pointRadius: 4 },
+      { label: '答錯', data: wrongPts,   backgroundColor: 'rgba(192,70,58,0.6)', pointRadius: 4 }
+    ]},
+    options: {
+      responsive: true,
+      scales: {
+        x: { title: { display: true, text: '答題時間（秒，>300 截斷）' }, min: 0, max: 300 },
+        y: { display: false, min: 0, max: 1 }
+      },
+      plugins: { tooltip: { callbacks: { label: (ctx) => `${ctx.parsed.x}s` } } }
+    }
+  });
+}
+
+function destroyChart(id) {
+  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+}
+
+// ===== INIT =====
+window.addEventListener('DOMContentLoaded', boot);
+supa.auth.onAuthStateChange((event) => {
+  if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') boot();
+  if (event === 'SIGNED_OUT') showLogin();
+});
+</script>
+
+</body>
+</html>
