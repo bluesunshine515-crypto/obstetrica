@@ -2621,6 +2621,30 @@ async function loadSessionMap() {
   data.forEach(r => { if (sessionMap[r.phase] === null) sessionMap[r.phase] = r.id; });
 }
 
+// ===== ANNOTATION CACHE (v1.6) =====
+// notes/bookmarks/difficulty 主資料源 = Supabase
+// 載入後同步寫進記憶體 cache，UI 函式同步讀 cache、寫時 fire-and-forget 推回 DB
+let notesCache      = new Map();   // qid -> body
+let bookmarksCache  = new Set();   // qid
+let difficultyCache = new Map();   // qid -> stars (1-5)
+let annotationsLoaded = false;
+
+async function loadAnnotations(uid) {
+  if (!uid) return;
+  const [n, b, d] = await Promise.all([
+    supa.from('notes').select('question_id, body').eq('student_id', uid),
+    supa.from('bookmarks').select('question_id').eq('student_id', uid),
+    supa.from('difficulty_ratings').select('question_id, stars').eq('student_id', uid)
+  ]);
+  if (n.error) console.warn('loadAnnotations notes', n.error);
+  if (b.error) console.warn('loadAnnotations bookmarks', b.error);
+  if (d.error) console.warn('loadAnnotations difficulty', d.error);
+  notesCache      = new Map((n.data || []).map(r => [r.question_id, r.body]));
+  bookmarksCache  = new Set((b.data || []).map(r => r.question_id));
+  difficultyCache = new Map((d.data || []).map(r => [r.question_id, r.stars]));
+  annotationsLoaded = true;
+}
+
 async function fetchStudentRow(uid) {
   const { data, error } = await supa.from('students').select('*').eq('id', uid).maybeSingle();
   if (error) console.warn('fetchStudentRow', error);
@@ -2681,24 +2705,29 @@ window.addEventListener('DOMContentLoaded', init);
 // ============================================
 
 function getNote(qid) {
-  return localStorage.getItem(STORAGE_KEYS.NOTE_PREFIX + qid) || '';
+  return notesCache.get(qid) || '';
 }
 
 function setNote(qid, text) {
-  if (text && text.trim()) {
-    localStorage.setItem(STORAGE_KEYS.NOTE_PREFIX + qid, text);
+  if (!user || !user.id) return;
+  const body = (text || '').trim();
+  if (body) {
+    notesCache.set(qid, body);
+    supa.from('notes')
+      .upsert({ student_id: user.id, question_id: qid, body }, { onConflict: 'student_id,question_id' })
+      .then(({ error }) => { if (error) console.warn('setNote upsert', error); });
   } else {
-    localStorage.removeItem(STORAGE_KEYS.NOTE_PREFIX + qid);
+    notesCache.delete(qid);
+    supa.from('notes')
+      .delete()
+      .eq('student_id', user.id)
+      .eq('question_id', qid)
+      .then(({ error }) => { if (error) console.warn('setNote delete', error); });
   }
 }
 
 function getAllNoteCount() {
-  let n = 0;
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (k && k.startsWith(STORAGE_KEYS.NOTE_PREFIX)) n++;
-  }
-  return n;
+  return notesCache.size;
 }
 
 function openNoteModal(qid) {
@@ -2732,15 +2761,26 @@ function updateNoteBtnState() {
 }
 
 function getUserDifficulty(qid) {
-  const v = localStorage.getItem(STORAGE_KEYS.DIFF_PREFIX + qid);
-  return v ? parseInt(v) : null;
+  const v = difficultyCache.get(qid);
+  return (typeof v === 'number') ? v : null;
 }
 
 function setUserDifficulty(qid, n) {
+  if (!user || !user.id) return;
   if (n === null) {
-    localStorage.removeItem(STORAGE_KEYS.DIFF_PREFIX + qid);
+    difficultyCache.delete(qid);
+    supa.from('difficulty_ratings')
+      .delete()
+      .eq('student_id', user.id)
+      .eq('question_id', qid)
+      .then(({ error }) => { if (error) console.warn('setUserDifficulty delete', error); });
   } else {
-    localStorage.setItem(STORAGE_KEYS.DIFF_PREFIX + qid, String(n));
+    const stars = parseInt(n);
+    if (!(stars >= 1 && stars <= 5)) return;
+    difficultyCache.set(qid, stars);
+    supa.from('difficulty_ratings')
+      .upsert({ student_id: user.id, question_id: qid, stars }, { onConflict: 'student_id,question_id' })
+      .then(({ error }) => { if (error) console.warn('setUserDifficulty upsert', error); });
   }
 }
 
@@ -2773,31 +2813,34 @@ function setUserDifficultyFromUI(qid, n) {
 }
 
 function getBookmarks() {
-  try {
-    return new Set(JSON.parse(localStorage.getItem(STORAGE_KEYS.BOOKMARKS) || '[]'));
-  } catch {
-    return new Set();
-  }
-}
-
-function saveBookmarks(set) {
-  localStorage.setItem(STORAGE_KEYS.BOOKMARKS, JSON.stringify(Array.from(set)));
+  return new Set(bookmarksCache);
 }
 
 function isBookmarked(qid) {
-  return getBookmarks().has(qid);
+  return bookmarksCache.has(qid);
 }
 
 function toggleBookmark(qid) {
-  const bm = getBookmarks();
-  if (bm.has(qid)) bm.delete(qid);
-  else bm.add(qid);
-  saveBookmarks(bm);
+  if (!user || !user.id) return;
+  const willAdd = !bookmarksCache.has(qid);
+  if (willAdd) {
+    bookmarksCache.add(qid);
+    supa.from('bookmarks')
+      .upsert({ student_id: user.id, question_id: qid }, { onConflict: 'student_id,question_id' })
+      .then(({ error }) => { if (error) console.warn('toggleBookmark upsert', error); });
+  } else {
+    bookmarksCache.delete(qid);
+    supa.from('bookmarks')
+      .delete()
+      .eq('student_id', user.id)
+      .eq('question_id', qid)
+      .then(({ error }) => { if (error) console.warn('toggleBookmark delete', error); });
+  }
   const btn = document.getElementById('bookmarkBtn');
   if (btn) {
-    btn.classList.toggle('active', bm.has(qid));
-    btn.innerHTML = bm.has(qid) ? '★' : '☆';
-    btn.title = bm.has(qid) ? '取消收藏' : '收藏題目';
+    btn.classList.toggle('active', willAdd);
+    btn.innerHTML = willAdd ? '★' : '☆';
+    btn.title = willAdd ? '取消收藏' : '收藏題目';
   }
 }
 
@@ -2929,6 +2972,7 @@ async function init() {
     joinedAt: sr.created_at
   };
   saveUser();
+  await loadAnnotations(user.id);
   if (!user.name) { showProfileModal(); return; }
   renderUserBar();
   renderDashboard();
