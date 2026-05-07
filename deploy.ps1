@@ -162,7 +162,7 @@ Write-Host ""
 $htmlFiles = $changedFiles | Where-Object { $_.Path -match '\.html$' -and $_.Status -ne 'D' }
 foreach ($h in $htmlFiles) {
     Write-Info "HTML：$($h.Path) — 偵測版本號變化"
-    $diffOut = git diff HEAD -- $h.Path 2>$null | Select-String -Pattern '(?i)version|v\d+\.\d+'
+    $diffOut = git diff HEAD -- $h.Path | Select-String -Pattern '(?i)version|v\d+\.\d+'
     if ($diffOut) {
         foreach ($line in $diffOut | Select-Object -First 6) {
             Write-Host "      $line" -ForegroundColor DarkYellow

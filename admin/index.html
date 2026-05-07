@@ -118,6 +118,79 @@ tbody tr:hover { background: #fafafa; }
 .deny-card { text-align: center; padding: 60px 20px; }
 .deny-card h2 { font-family: 'Noto Serif TC', serif; margin-bottom: 12px; }
 .deny-card p { color: var(--ink-soft); margin-bottom: 16px; }
+
+/* ===== Tabs (v1.7) ===== */
+.tab-bar {
+  display: flex; gap: 4px; margin-bottom: 20px;
+  border-bottom: 2px solid var(--line);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.tab-btn {
+  padding: 12px 18px; background: none; border: none;
+  font: inherit; font-size: 14px; cursor: pointer;
+  color: var(--ink-soft); white-space: nowrap;
+  border-bottom: 2px solid transparent; margin-bottom: -2px;
+  display: inline-flex; align-items: baseline; gap: 6px;
+}
+.tab-btn:hover { color: var(--ink); background: rgba(0,0,0,0.02); }
+.tab-btn.active {
+  color: var(--ink); border-bottom-color: var(--gold); font-weight: 600;
+}
+.tab-btn .en { font-size: 11px; color: var(--ink-mute); font-weight: 400; }
+.tab-btn.active .en { color: var(--gold); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ===== Accuracy bar ===== */
+.acc-cell { display: flex; align-items: center; gap: 8px; min-width: 130px; }
+.acc-bar-wrap { flex: 1; height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; min-width: 60px; }
+.acc-bar-fill { height: 100%; transition: width 0.3s; }
+.acc-bar-fill.low  { background: var(--red); }
+.acc-bar-fill.mid  { background: var(--gold); }
+.acc-bar-fill.high { background: var(--green); }
+.acc-text { font-variant-numeric: tabular-nums; font-size: 13px; min-width: 48px; text-align: right; color: var(--ink); }
+
+/* ===== Sortable table ===== */
+table.sortable th { cursor: pointer; user-select: none; }
+table.sortable th:hover { background: #f0ede5; }
+table.sortable th.sorted-asc::after  { content: ' ↑'; color: var(--gold); }
+table.sortable th.sorted-desc::after { content: ' ↓'; color: var(--gold); }
+table.clickable-rows tbody tr { cursor: pointer; }
+table.clickable-rows tbody tr:hover { background: #f5f0e2; }
+
+/* ===== Tab placeholder (for tabs not yet implemented) ===== */
+.tab-stub { padding: 80px 20px; text-align: center; color: var(--ink-mute); font-style: italic; font-size: 15px; }
+
+/* ===== Tab 2: Student profile card ===== */
+.profile-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 24px;
+  align-items: center;
+}
+.profile-avatar {
+  width: 64px; height: 64px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--gold), var(--rust));
+  color: var(--paper);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; font-weight: 600; font-family: 'Noto Serif TC', serif;
+  letter-spacing: 1px;
+  flex-shrink: 0;
+}
+.profile-info { min-width: 0; }
+.profile-name { font-size: 22px; font-weight: 600; font-family: 'Noto Serif TC', serif; }
+.profile-meta { font-size: 13px; color: var(--ink-soft); margin-top: 4px; word-break: break-all; }
+.profile-stats { display: flex; gap: 28px; flex-wrap: wrap; }
+.profile-stat { text-align: right; min-width: 64px; }
+.profile-stat-label { font-size: 11px; color: var(--ink-mute); text-transform: uppercase; letter-spacing: 0.5px; }
+.profile-stat-value { font-size: 22px; font-weight: 600; font-family: 'Noto Serif TC', serif; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.profile-stat-value.small { font-size: 14px; }
+@media (max-width: 760px) {
+  .profile-card { grid-template-columns: auto 1fr; }
+  .profile-stats { grid-column: 1 / -1; justify-content: flex-start; gap: 18px; }
+  .profile-stat { text-align: left; }
+}
 </style>
 </head>
 <body>
@@ -154,7 +227,7 @@ const supa = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
 });
 const REDIRECT_TO = window.location.origin + window.location.pathname;
 
-// ===== 8-axis category grouping =====
+// ===== 8-axis category grouping (legacy: kept for Tab 4/5 future use) =====
 const CATEGORY_GROUPS = {
   '婦科-生殖內分泌/不孕': ['婦科-生殖內分泌','婦科-不孕症','婦科-青春期/異常出血'],
   '婦科-良性腫瘤/異常':   ['婦科-子宮肌瘤','婦科-子宮內膜異位','婦科-卵巢腫瘤','婦科-性發育異常','婦科-生殖道發育'],
@@ -178,16 +251,55 @@ function groupOf(cat) {
 const GROUP_ORDER = Object.keys(CATEGORY_GROUPS);
 
 // ===== STATE =====
-let me = null;       // current logged-in teacher row
-let allAttempts = [];
-let allStudents = [];
-let allSessions = [];
-let charts = {};
+let me = null; // current logged-in teacher row
+let activeTab = 'overview';
+let selectedStudentId = null; // 跨 tab 共享
+const cache = {
+  overview: null,        // v_student_overview
+  classTopic: null,      // v_class_topic_stats
+  hotspots: null,        // v_misconception_hotspots
+  questionStats: null,   // v_question_stats
+  studentTopic: {},      // keyed by studentId → v_student_topic_stats rows
+  studentWrong: {},      // keyed by studentId → wrong attempts rows
+  studentSessions: {},   // keyed by studentId → grouped session rows
+};
+const charts = {};
+// Tab 1 state
+let overviewSort = { key: 'last_activity', dir: 'desc' };
+let overviewYearFilter = '';
 
-// ===== AUTH =====
+// ===== UTILITIES =====
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+function destroyChart(id) {
+  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+}
+function relativeTime(iso) {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (isNaN(t)) return '—';
+  const diff = Date.now() - t;
+  if (diff < 0) return '剛剛';
+  if (diff < 60_000) return '剛剛';
+  if (diff < 3_600_000) return Math.floor(diff / 60_000) + ' 分鐘前';
+  if (diff < 86_400_000) return Math.floor(diff / 3_600_000) + ' 小時前';
+  if (diff < 30 * 86_400_000) return Math.floor(diff / 86_400_000) + ' 天前';
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+// Normalize accuracy to a 0–100 number (handles both 0–1 ratio and 0–100 percent forms)
+function toPct(v) {
+  if (v == null) return 0;
+  const n = Number(v);
+  if (isNaN(n)) return 0;
+  return n > 1 ? +n.toFixed(1) : +(n * 100).toFixed(1);
+}
+function accClass(pct) {
+  return pct >= 70 ? 'high' : pct >= 50 ? 'mid' : 'low';
+}
+
+// ===== AUTH =====
 function showLogin() {
   document.getElementById('loginModal').classList.add('active');
   document.getElementById('mainContent').innerHTML = '';
@@ -221,7 +333,6 @@ function showDenied(reason) {
 async function boot() {
   const { data: { session } } = await supa.auth.getSession();
   if (!session) { showLogin(); return; }
-  // fetch self student row
   const { data: row, error } = await supa.from('students').select('*').eq('id', session.user.id).maybeSingle();
   if (error || !row) {
     showDenied('找不到使用者資料：' + (error?.message ?? '請先到主站完成首次登入'));
@@ -237,251 +348,570 @@ async function boot() {
     <a href="../">學員端</a>
     <button onclick="logout()">登出</button>`;
   document.getElementById('loginModal').classList.remove('active');
-  await loadData();
-  renderAll();
+  renderShell();
+  switchTab('overview');
 }
 
-// ===== DATA =====
-async function loadData() {
-  document.getElementById('mainContent').innerHTML = '<div class="empty">載入資料中…</div>';
-  const [aRes, sRes, eRes] = await Promise.all([
-    supa.from('attempts').select('*').order('attempted_at', { ascending: false }),
-    supa.from('students').select('*').order('name'),
-    supa.from('exam_sessions').select('*').order('created_at')
-  ]);
-  if (aRes.error || sRes.error || eRes.error) {
-    document.getElementById('mainContent').innerHTML = '<div class="empty">載入失敗：' + esc(aRes.error?.message || sRes.error?.message || eRes.error?.message) + '</div>';
-    throw new Error('load failed');
-  }
-  allAttempts = aRes.data;
-  allStudents = sRes.data;
-  allSessions = eRes.data;
-}
-
-// ===== RENDER =====
-function renderAll() {
-  const studentMap = Object.fromEntries(allStudents.map(s => [s.id, s]));
-  const sessionMap = Object.fromEntries(allSessions.map(s => [s.id, s]));
-  const studentList = allStudents.filter(s => s.role === 'student');
-  const sessionOptions = allSessions.map(s => `<option value="${s.id}">${esc(s.name)} · ${esc(s.phase)}</option>`).join('');
-  const studentOptions = ['<option value="">— 全部 —</option>']
-    .concat(studentList.map(s => `<option value="${s.id}">${esc(s.name || s.email)} (${esc(s.year || '?')})</option>`))
-    .join('');
-
+// ===== SHELL =====
+function renderShell() {
   document.getElementById('mainContent').innerHTML = `
-    <div class="controls">
-      <div class="ctrl-group">
-        <label>Session 篩選</label>
-        <select id="filterSession">
-          <option value="">— 全部 —</option>
-          ${sessionOptions}
-        </select>
-      </div>
-      <div class="ctrl-group">
-        <label>學生（雷達圖用）</label>
-        <select id="filterStudent">${studentOptions}</select>
-      </div>
-      <button class="btn btn-secondary" onclick="loadData().then(renderAll)">🔄 重新載入</button>
-    </div>
-
-    <div class="kpi-row" id="kpiRow"></div>
-
-    <div class="card">
-      <div class="card-title">① 班級 · 各分類平均對題率</div>
-      <div class="card-sub">所有學生在 8 大組別的平均答對比例（依目前 session 篩選）</div>
-      <div class="chart-wrap"><canvas id="chartCategoryAvg" height="120"></canvas></div>
-    </div>
-
-    <div class="card">
-      <div class="card-title">② 個別學生 · 8 軸雷達圖</div>
-      <div class="card-sub">選擇上方「學生」下拉選單後即時更新</div>
-      <div class="chart-wrap"><canvas id="chartRadar" height="120"></canvas></div>
-    </div>
-
-    <div class="card">
-      <div class="card-title">③ 前測 vs 後測 · 成對柱狀圖</div>
-      <div class="card-sub">同一批參加前後測的學生在 8 組的平均對題率比較</div>
-      <div class="chart-wrap"><canvas id="chartPrePost" height="120"></canvas></div>
-    </div>
-
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-title">④ 錯題 Top 10</div>
-        <div class="card-sub">依錯誤次數排序（依目前 session 篩選）</div>
-        <div id="topWrongTable"></div>
-      </div>
-      <div class="card">
-        <div class="card-title">⑤ 答題時間 vs 對錯</div>
-        <div class="card-sub">每個點 = 一次作答（綠 = 對、紅 = 錯）</div>
-        <div class="chart-wrap"><canvas id="chartScatter" height="180"></canvas></div>
-      </div>
-    </div>
+    <nav class="tab-bar" role="tablist">
+      <button class="tab-btn" data-tab="overview">📊 班級總覽 <span class="en">Overview</span></button>
+      <button class="tab-btn" data-tab="student">👤 學生詳情 <span class="en">Student</span></button>
+      <button class="tab-btn" data-tab="wrong">❌ 錯題集 <span class="en">Wrong</span></button>
+      <button class="tab-btn" data-tab="weakness">🎯 弱項分析 <span class="en">Weakness</span></button>
+      <button class="tab-btn" data-tab="misconception">🔍 誘答分析 <span class="en">Misconception</span></button>
+    </nav>
+    <div class="tab-panel" id="tab-overview"></div>
+    <div class="tab-panel" id="tab-student"><div class="tab-stub">敬請期待 · Tab 2 將實作學生詳情</div></div>
+    <div class="tab-panel" id="tab-wrong"><div class="tab-stub">敬請期待 · Tab 3 將實作錯題集</div></div>
+    <div class="tab-panel" id="tab-weakness"><div class="tab-stub">敬請期待 · Tab 4 將實作弱項分析</div></div>
+    <div class="tab-panel" id="tab-misconception"><div class="tab-stub">敬請期待 · Tab 5 將實作誘答分析</div></div>
   `;
-
-  const filterSession = document.getElementById('filterSession');
-  const filterStudent = document.getElementById('filterStudent');
-  const update = () => renderCharts(filterSession.value, filterStudent.value, studentMap, sessionMap);
-  filterSession.addEventListener('change', update);
-  filterStudent.addEventListener('change', update);
-  update();
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
 }
 
-function renderCharts(sessionId, studentId, studentMap, sessionMap) {
-  // Filter attempts
-  let filtered = allAttempts;
-  if (sessionId) filtered = filtered.filter(a => a.session_id === sessionId);
+function switchTab(name, opts = {}) {
+  activeTab = name;
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === name);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    p.classList.toggle('active', p.id === 'tab-' + name);
+  });
+  if (opts.studentId) selectedStudentId = opts.studentId;
+
+  if (name === 'overview') renderOverview();
+  else if (name === 'student') renderStudentDetail();
+  // Tab 3-5 will be wired up in subsequent iterations.
+}
+
+// ===== TAB 1: OVERVIEW =====
+async function fetchOverview() {
+  if (cache.overview) return cache.overview;
+  const { data, error } = await supa
+    .from('v_student_overview')
+    .select('*');
+  if (error) throw error;
+  cache.overview = data || [];
+  return cache.overview;
+}
+
+async function renderOverview() {
+  const panel = document.getElementById('tab-overview');
+  panel.innerHTML = '<div class="empty">載入中…</div>';
+  let rows;
+  try {
+    rows = await fetchOverview();
+  } catch (e) {
+    panel.innerHTML = `<div class="empty">載入失敗：${esc(e.message || String(e))}</div>`;
+    return;
+  }
+  if (!rows || rows.length === 0) {
+    panel.innerHTML = '<div class="empty">尚無學生資料</div>';
+    return;
+  }
 
   // KPIs
-  const totalAttempts = filtered.length;
-  const uniqueStudents = new Set(filtered.map(a => a.student_id)).size;
-  const correctCount = filtered.filter(a => a.is_correct).length;
-  const accPct = totalAttempts > 0 ? (correctCount / totalAttempts * 100).toFixed(1) : '0.0';
-  const sessionsActive = new Set(filtered.map(a => a.session_id)).size;
-  document.getElementById('kpiRow').innerHTML = `
-    <div class="kpi"><div class="kpi-label">總提交筆數</div><div class="kpi-value">${totalAttempts.toLocaleString()}</div><div class="kpi-sub">attempts</div></div>
-    <div class="kpi"><div class="kpi-label">參與學生</div><div class="kpi-value">${uniqueStudents}</div><div class="kpi-sub">人</div></div>
-    <div class="kpi"><div class="kpi-label">總體正確率</div><div class="kpi-value">${accPct}%</div><div class="kpi-sub">${correctCount} 答對</div></div>
-    <div class="kpi"><div class="kpi-label">使用 Sessions</div><div class="kpi-value">${sessionsActive}</div><div class="kpi-sub">/ ${allSessions.length}</div></div>
+  const totalStudents = rows.length;
+  const totalAttempts = rows.reduce((s, r) => s + (Number(r.total_attempts) || 0), 0);
+  const totalCorrect  = rows.reduce((s, r) => s + (Number(r.correct_count) || 0), 0);
+  const classAcc = totalAttempts > 0 ? +(totalCorrect / totalAttempts * 100).toFixed(1) : 0;
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const activeWeek = rows.filter(r => {
+    if (!r.last_activity) return false;
+    const t = new Date(r.last_activity).getTime();
+    return !isNaN(t) && t >= sevenDaysAgo;
+  }).length;
+
+  panel.innerHTML = `
+    <div class="kpi-row">
+      <div class="kpi">
+        <div class="kpi-label">學生總數</div>
+        <div class="kpi-value">${totalStudents}</div>
+        <div class="kpi-sub">Total students</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">累計答題數</div>
+        <div class="kpi-value">${totalAttempts.toLocaleString()}</div>
+        <div class="kpi-sub">Total attempts</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">班級平均正確率</div>
+        <div class="kpi-value">${classAcc}%</div>
+        <div class="kpi-sub">${totalCorrect.toLocaleString()} 答對</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">本週活躍人數</div>
+        <div class="kpi-value">${activeWeek}</div>
+        <div class="kpi-sub">近 7 天 active</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="ctrl-group">
+        <label>年級 Year</label>
+        <select id="overviewYearFilter">
+          <option value="">— 全部 —</option>
+          <option value="R1">R1</option>
+          <option value="R2">R2</option>
+          <option value="R3">R3</option>
+          <option value="R4">R4</option>
+        </select>
+      </div>
+      <button class="btn btn-secondary" id="overviewReload">🔄 重新載入</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">學生列表 Student List</div>
+      <div class="card-sub">點擊任一列可跳到「學生詳情」分頁；點欄位標題可切換排序</div>
+      <div id="overviewTableWrap"></div>
+    </div>
   `;
 
-  // 1. Category accuracy (8 groups, horizontal bar)
-  const groupStats = {};
-  GROUP_ORDER.forEach(g => groupStats[g] = { total: 0, correct: 0 });
-  filtered.forEach(a => {
-    const g = groupOf(a.category);
-    if (!groupStats[g]) groupStats[g] = { total: 0, correct: 0 };
-    groupStats[g].total++;
-    if (a.is_correct) groupStats[g].correct++;
+  const yearSel = document.getElementById('overviewYearFilter');
+  yearSel.value = overviewYearFilter;
+  yearSel.addEventListener('change', e => {
+    overviewYearFilter = e.target.value;
+    renderOverviewTable();
   });
-  const cat1Labels = GROUP_ORDER;
-  const cat1Data = cat1Labels.map(g => groupStats[g].total > 0 ? +(groupStats[g].correct / groupStats[g].total * 100).toFixed(1) : 0);
-  const cat1Counts = cat1Labels.map(g => groupStats[g].total);
-  destroyChart('chartCategoryAvg');
-  charts.chartCategoryAvg = new Chart(document.getElementById('chartCategoryAvg'), {
-    type: 'bar',
-    data: {
-      labels: cat1Labels,
-      datasets: [{
-        label: '平均對題率 (%)',
-        data: cat1Data,
-        backgroundColor: cat1Data.map(v => v >= 70 ? '#4a7c59' : v >= 50 ? '#b08d4f' : '#a3522e'),
-      }]
-    },
-    options: {
-      indexAxis: 'y',
-      responsive: true,
-      scales: { x: { min: 0, max: 100, title: { display: true, text: '%' } } },
-      plugins: {
-        legend: { display: false },
-        tooltip: { callbacks: { label: (ctx) => `${ctx.parsed.x}% (n=${cat1Counts[ctx.dataIndex]})` } }
+  document.getElementById('overviewReload').addEventListener('click', async () => {
+    cache.overview = null;
+    await renderOverview();
+  });
+
+  renderOverviewTable();
+}
+
+function renderOverviewTable() {
+  const wrap = document.getElementById('overviewTableWrap');
+  if (!wrap) return;
+  const all = cache.overview || [];
+  const rows = overviewYearFilter
+    ? all.filter(r => r.year === overviewYearFilter)
+    : all.slice();
+
+  // Sort
+  const { key, dir } = overviewSort;
+  rows.sort((a, b) => {
+    let av = a[key], bv = b[key];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (key === 'last_activity') {
+      av = new Date(av).getTime() || 0;
+      bv = new Date(bv).getTime() || 0;
+    }
+    if (typeof av === 'string' && typeof bv === 'string') {
+      return dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+    }
+    av = Number(av) || 0; bv = Number(bv) || 0;
+    return dir === 'asc' ? av - bv : bv - av;
+  });
+
+  if (rows.length === 0) {
+    wrap.innerHTML = '<div class="empty">沒有符合年級篩選的學生</div>';
+    return;
+  }
+
+  const cols = [
+    { key: 'display_name',   label: '姓名 Name' },
+    { key: 'year',           label: '年級 Year' },
+    { key: 'total_attempts', label: '答題數 Attempts' },
+    { key: 'accuracy_rate',  label: '正確率 Accuracy' },
+    { key: 'sessions_count', label: 'Sessions' },
+    { key: 'avg_time_per_q', label: '平均秒/題 Avg s/Q' },
+    { key: 'last_activity',  label: '最近活動 Last seen' },
+  ];
+
+  wrap.innerHTML = `
+    <table class="sortable clickable-rows">
+      <thead><tr>
+        ${cols.map(c => {
+          const sortCls = overviewSort.key === c.key ? ('sorted-' + overviewSort.dir) : '';
+          return `<th data-key="${c.key}" class="${sortCls}">${esc(c.label)}</th>`;
+        }).join('')}
+      </tr></thead>
+      <tbody>
+        ${rows.map(r => {
+          const acc = toPct(r.accuracy_rate);
+          const cls = accClass(acc);
+          const avgT = (r.avg_time_per_q == null || isNaN(Number(r.avg_time_per_q)))
+            ? '—' : Math.round(Number(r.avg_time_per_q)) + ' s';
+          return `
+            <tr data-student-id="${esc(r.student_id)}">
+              <td>${esc(r.display_name || r.email || '?')}</td>
+              <td>${esc(r.year || '—')}</td>
+              <td>${(Number(r.total_attempts) || 0).toLocaleString()}</td>
+              <td>
+                <div class="acc-cell">
+                  <div class="acc-bar-wrap"><div class="acc-bar-fill ${cls}" style="width:${acc}%"></div></div>
+                  <div class="acc-text">${acc}%</div>
+                </div>
+              </td>
+              <td>${Number(r.sessions_count) || 0}</td>
+              <td>${avgT}</td>
+              <td>${relativeTime(r.last_activity)}</td>
+            </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+
+  // Wire up sort headers
+  wrap.querySelectorAll('th[data-key]').forEach(th => {
+    th.addEventListener('click', () => {
+      const k = th.dataset.key;
+      if (overviewSort.key === k) {
+        overviewSort.dir = overviewSort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        overviewSort.key = k;
+        overviewSort.dir = (k === 'display_name' || k === 'year') ? 'asc' : 'desc';
       }
-    }
-  });
-
-  // 2. Radar for selected student
-  let radarLabels = GROUP_ORDER, radarData = new Array(GROUP_ORDER.length).fill(0);
-  let radarTitle = '（請從上方選擇學生）';
-  if (studentId) {
-    const sAttempts = filtered.filter(a => a.student_id === studentId);
-    const sgs = {};
-    GROUP_ORDER.forEach(g => sgs[g] = { total: 0, correct: 0 });
-    sAttempts.forEach(a => {
-      const g = groupOf(a.category);
-      if (!sgs[g]) sgs[g] = { total: 0, correct: 0 };
-      sgs[g].total++;
-      if (a.is_correct) sgs[g].correct++;
+      renderOverviewTable();
     });
-    radarData = GROUP_ORDER.map(g => sgs[g].total > 0 ? +(sgs[g].correct / sgs[g].total * 100).toFixed(1) : 0);
-    const stu = studentMap[studentId];
-    radarTitle = (stu?.name || stu?.email || '?') + ' · ' + sAttempts.length + ' 筆作答';
-  }
-  destroyChart('chartRadar');
-  charts.chartRadar = new Chart(document.getElementById('chartRadar'), {
-    type: 'radar',
-    data: { labels: radarLabels, datasets: [{ label: radarTitle, data: radarData, backgroundColor: 'rgba(176,141,79,0.2)', borderColor: '#b08d4f', pointBackgroundColor: '#b08d4f' }] },
-    options: { responsive: true, scales: { r: { min: 0, max: 100, ticks: { stepSize: 25 } } } }
   });
-
-  // 3. Pre vs Post paired bar
-  const preSession = allSessions.find(s => s.phase === 'pretest');
-  const postSession = allSessions.find(s => s.phase === 'posttest');
-  const preStats = {}, postStats = {};
-  GROUP_ORDER.forEach(g => { preStats[g] = { total: 0, correct: 0 }; postStats[g] = { total: 0, correct: 0 }; });
-  allAttempts.forEach(a => {
-    const g = groupOf(a.category);
-    if (preSession && a.session_id === preSession.id)  { preStats[g].total++;  if (a.is_correct) preStats[g].correct++; }
-    if (postSession && a.session_id === postSession.id){ postStats[g].total++; if (a.is_correct) postStats[g].correct++; }
-  });
-  const preData  = GROUP_ORDER.map(g => preStats[g].total  > 0 ? +(preStats[g].correct  / preStats[g].total  * 100).toFixed(1) : 0);
-  const postData = GROUP_ORDER.map(g => postStats[g].total > 0 ? +(postStats[g].correct / postStats[g].total * 100).toFixed(1) : 0);
-  destroyChart('chartPrePost');
-  charts.chartPrePost = new Chart(document.getElementById('chartPrePost'), {
-    type: 'bar',
-    data: {
-      labels: GROUP_ORDER,
-      datasets: [
-        { label: '前測', data: preData,  backgroundColor: '#2e6e7a' },
-        { label: '後測', data: postData, backgroundColor: '#b08d4f' }
-      ]
-    },
-    options: {
-      responsive: true,
-      scales: { y: { min: 0, max: 100, title: { display: true, text: '對題率 %' } } }
-    }
-  });
-
-  // 4. Top 10 wrong
-  const wrongCount = {};
-  filtered.forEach(a => { if (!a.is_correct) wrongCount[a.question_id] = (wrongCount[a.question_id] || 0) + 1; });
-  const top = Object.entries(wrongCount).sort((a,b) => b[1] - a[1]).slice(0, 10);
-  if (top.length === 0) {
-    document.getElementById('topWrongTable').innerHTML = '<div class="empty">暫無錯題資料</div>';
-  } else {
-    const cats = {};
-    filtered.forEach(a => { if (!cats[a.question_id]) cats[a.question_id] = { category: a.category, exam: a.exam }; });
-    document.getElementById('topWrongTable').innerHTML = `
-      <table>
-        <thead><tr><th>題號</th><th>分類</th><th>試卷</th><th>錯誤次數</th></tr></thead>
-        <tbody>
-          ${top.map(([qid, n]) => `
-            <tr>
-              <td><code>${esc(qid)}</code></td>
-              <td>${esc(cats[qid]?.category || '?')}</td>
-              <td>${esc(cats[qid]?.exam || '?')}</td>
-              <td><span class="tag-wrong">${n}</span></td>
-            </tr>`).join('')}
-        </tbody>
-      </table>`;
-  }
-
-  // 5. Time vs correctness scatter
-  const correctPts = [], wrongPts = [];
-  filtered.forEach(a => {
-    if (a.time_spent_sec == null) return;
-    const x = Math.min(a.time_spent_sec, 300);
-    const point = { x, y: Math.random() * 0.4 + (a.is_correct ? 0.6 : 0) };
-    (a.is_correct ? correctPts : wrongPts).push(point);
-  });
-  destroyChart('chartScatter');
-  charts.chartScatter = new Chart(document.getElementById('chartScatter'), {
-    type: 'scatter',
-    data: { datasets: [
-      { label: '答對', data: correctPts, backgroundColor: 'rgba(74,124,89,0.6)', pointRadius: 4 },
-      { label: '答錯', data: wrongPts,   backgroundColor: 'rgba(192,70,58,0.6)', pointRadius: 4 }
-    ]},
-    options: {
-      responsive: true,
-      scales: {
-        x: { title: { display: true, text: '答題時間（秒，>300 截斷）' }, min: 0, max: 300 },
-        y: { display: false, min: 0, max: 1 }
-      },
-      plugins: { tooltip: { callbacks: { label: (ctx) => `${ctx.parsed.x}s` } } }
-    }
+  // Wire up row click → Tab 2
+  wrap.querySelectorAll('tr[data-student-id]').forEach(tr => {
+    tr.addEventListener('click', () => {
+      switchTab('student', { studentId: tr.dataset.studentId });
+    });
   });
 }
 
-function destroyChart(id) {
-  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+// ===== TAB 2: STUDENT DETAIL =====
+async function fetchStudentTopicStats(studentId) {
+  if (cache.studentTopic[studentId]) return cache.studentTopic[studentId];
+  const { data, error } = await supa
+    .from('v_student_topic_stats')
+    .select('*')
+    .eq('student_id', studentId);
+  if (error) throw error;
+  cache.studentTopic[studentId] = data || [];
+  return cache.studentTopic[studentId];
+}
+
+async function fetchStudentRecentSessions(studentId) {
+  if (cache.studentSessions[studentId]) return cache.studentSessions[studentId];
+  const { data, error } = await supa
+    .from('attempts')
+    .select('session_id, is_correct, attempted_at, exam_sessions(name, phase, course)')
+    .eq('student_id', studentId)
+    .order('attempted_at', { ascending: false });
+  if (error) throw error;
+
+  // 依 session_id 聚合（query 已 desc 排序，每個 session 第一次出現的 row 即為該 session 最新時間）
+  const groups = {};
+  (data || []).forEach(a => {
+    if (!groups[a.session_id]) {
+      groups[a.session_id] = {
+        session_id: a.session_id,
+        name:   a.exam_sessions?.name   || '(unknown session)',
+        phase:  a.exam_sessions?.phase  || 'practice',
+        course: a.exam_sessions?.course || '',
+        total: 0,
+        correct: 0,
+        last_attempted_at: a.attempted_at,
+      };
+    }
+    const g = groups[a.session_id];
+    g.total++;
+    if (a.is_correct) g.correct++;
+  });
+
+  const sorted = Object.values(groups)
+    .sort((a, b) => new Date(b.last_attempted_at) - new Date(a.last_attempted_at))
+    .slice(0, 10);
+  cache.studentSessions[studentId] = sorted;
+  return sorted;
+}
+
+async function renderStudentDetail() {
+  const panel = document.getElementById('tab-student');
+  panel.innerHTML = '<div class="empty">載入學生清單中…</div>';
+
+  let students;
+  try {
+    students = await fetchOverview();
+  } catch (e) {
+    panel.innerHTML = `<div class="empty">載入失敗：${esc(e.message || String(e))}</div>`;
+    return;
+  }
+  if (!students || students.length === 0) {
+    panel.innerHTML = '<div class="empty">尚無學生資料</div>';
+    return;
+  }
+
+  // 預設選擇：跨 tab 帶入的 selectedStudentId，否則第一筆
+  if (!selectedStudentId || !students.find(s => s.student_id === selectedStudentId)) {
+    selectedStudentId = students[0].student_id;
+  }
+
+  panel.innerHTML = `
+    <div class="controls">
+      <div class="ctrl-group">
+        <label>選擇學生 Student</label>
+        <select id="studentPicker">
+          ${students.map(s =>
+            `<option value="${esc(s.student_id)}">${esc(s.display_name || s.email || '?')} (${esc(s.year || '?')})</option>`
+          ).join('')}
+        </select>
+      </div>
+    </div>
+    <div id="studentDetailContent"></div>
+  `;
+  const picker = document.getElementById('studentPicker');
+  picker.value = selectedStudentId;
+  picker.addEventListener('change', e => {
+    selectedStudentId = e.target.value;
+    renderStudentDetailContent();
+  });
+  renderStudentDetailContent();
+}
+
+async function renderStudentDetailContent() {
+  const wrap = document.getElementById('studentDetailContent');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="empty">載入中…</div>';
+
+  // 不重打 v_student_overview — 從 Tab 1 的 cache 取
+  const stu = (cache.overview || []).find(s => s.student_id === selectedStudentId);
+  if (!stu) {
+    wrap.innerHTML = '<div class="empty">找不到該學生</div>';
+    return;
+  }
+
+  let topicStats, sessions;
+  try {
+    [topicStats, sessions] = await Promise.all([
+      fetchStudentTopicStats(selectedStudentId),
+      fetchStudentRecentSessions(selectedStudentId),
+    ]);
+  } catch (e) {
+    wrap.innerHTML = `<div class="empty">載入失敗：${esc(e.message || String(e))}</div>`;
+    return;
+  }
+
+  // Layout: profile + radar (上排), sessions (下排)
+  wrap.innerHTML = `
+    <div class="grid-2">
+      <div id="profileCardSlot"></div>
+      <div id="radarChartSlot"></div>
+    </div>
+    <div id="recentSessionsSlot"></div>
+  `;
+  renderProfileCard(document.getElementById('profileCardSlot'), stu);
+  renderRadarChart(document.getElementById('radarChartSlot'), stu, topicStats);
+  renderRecentSessions(document.getElementById('recentSessionsSlot'), sessions);
+}
+
+function renderProfileCard(container, stu) {
+  const nameForAvatar = (stu.display_name || stu.email || '?').trim();
+  let initials = '?';
+  if (nameForAvatar.includes('@')) {
+    initials = nameForAvatar.split('@')[0].substring(0, 2).toUpperCase();
+  } else {
+    // 中文名取第一個字（display_name 第一個字）；英文取首字母
+    const han = nameForAvatar.match(/[一-鿿]/g);
+    if (han && han.length > 0) {
+      initials = han[0];
+    } else {
+      const parts = nameForAvatar.split(/\s+/);
+      initials = parts.length >= 2
+        ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+        : nameForAvatar.substring(0, 2).toUpperCase();
+    }
+  }
+
+  const acc = toPct(stu.accuracy_rate);
+  const avgT = (stu.avg_time_per_q == null || isNaN(Number(stu.avg_time_per_q)))
+    ? '—' : Math.round(Number(stu.avg_time_per_q)) + ' s';
+
+  container.innerHTML = `
+    <div class="profile-card card">
+      <div class="profile-avatar">${esc(initials)}</div>
+      <div class="profile-info">
+        <div class="profile-name">${esc(stu.display_name || stu.email || '?')}</div>
+        <div class="profile-meta">${esc(stu.year || '—')} · ${esc(stu.email || '')}</div>
+      </div>
+      <div class="profile-stats">
+        <div class="profile-stat">
+          <div class="profile-stat-label">總答題</div>
+          <div class="profile-stat-value">${(Number(stu.total_attempts) || 0).toLocaleString()}</div>
+        </div>
+        <div class="profile-stat">
+          <div class="profile-stat-label">正確率</div>
+          <div class="profile-stat-value">${acc}%</div>
+        </div>
+        <div class="profile-stat">
+          <div class="profile-stat-label">Sessions</div>
+          <div class="profile-stat-value">${Number(stu.sessions_count) || 0}</div>
+        </div>
+        <div class="profile-stat">
+          <div class="profile-stat-label">Avg s/Q</div>
+          <div class="profile-stat-value">${avgT}</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderRadarChart(container, stu, topicStats) {
+  // Aggregate topic_stats by major_topic
+  const majors = {};
+  (topicStats || []).forEach(t => {
+    const m = t.major_topic || '其他';
+    if (!majors[m]) majors[m] = { total: 0, correct: 0 };
+    majors[m].total   += Number(t.total)   || 0;
+    majors[m].correct += Number(t.correct) || 0;
+  });
+  const majorEntries = Object.entries(majors)
+    .map(([m, v]) => ({
+      major: m,
+      total: v.total,
+      correct: v.correct,
+      accuracy: v.total > 0 ? +(v.correct / v.total * 100).toFixed(1) : 0,
+    }))
+    .sort((a, b) => a.major.localeCompare(b.major, 'zh-Hant'));
+
+  destroyChart('studentMajorChart');
+
+  if (majorEntries.length === 0) {
+    container.innerHTML = `
+      <div class="card">
+        <div class="card-title">大科別表現 Major Topic Performance</div>
+        <div class="empty">該學生尚無答題紀錄</div>
+      </div>
+    `;
+    return;
+  }
+
+  const useRadar = majorEntries.length >= 3;
+  container.innerHTML = `
+    <div class="card">
+      <div class="card-title">大科別表現 Major Topic Performance</div>
+      <div class="card-sub">${useRadar ? `雷達圖 · ${majorEntries.length} 個大科` : '大科別少於 3 項，改用水平條形圖呈現'}</div>
+      <div class="chart-wrap"><canvas id="studentMajorChart" height="${useRadar ? 220 : 140}"></canvas></div>
+    </div>
+  `;
+
+  const canvas = document.getElementById('studentMajorChart');
+  if (useRadar) {
+    charts.studentMajorChart = new Chart(canvas, {
+      type: 'radar',
+      data: {
+        labels: majorEntries.map(e => e.major),
+        datasets: [{
+          label: stu.display_name || stu.email || '正確率',
+          data: majorEntries.map(e => e.accuracy),
+          backgroundColor: 'rgba(176,141,79,0.2)',
+          borderColor: '#b08d4f',
+          pointBackgroundColor: '#b08d4f',
+          pointBorderColor: '#fff',
+          pointHoverBackgroundColor: '#fff',
+          pointHoverBorderColor: '#b08d4f',
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: { r: { min: 0, max: 100, ticks: { stepSize: 25 } } },
+        plugins: {
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const e = majorEntries[ctx.dataIndex];
+                return `${e.accuracy}% (${e.correct}/${e.total})`;
+              }
+            }
+          }
+        }
+      }
+    });
+  } else {
+    charts.studentMajorChart = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: majorEntries.map(e => e.major),
+        datasets: [{
+          label: '正確率 (%)',
+          data: majorEntries.map(e => e.accuracy),
+          backgroundColor: majorEntries.map(e =>
+            e.accuracy >= 70 ? '#4a7c59' : e.accuracy >= 50 ? '#b08d4f' : '#a3522e'
+          ),
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        scales: { x: { min: 0, max: 100, title: { display: true, text: '%' } } },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const e = majorEntries[ctx.dataIndex];
+                return `${e.accuracy}% (${e.correct}/${e.total})`;
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+}
+
+function renderRecentSessions(container, sessions) {
+  if (!sessions || sessions.length === 0) {
+    container.innerHTML = `
+      <div class="card">
+        <div class="card-title">最近 10 次 Sessions</div>
+        <div class="empty">尚無 session 紀錄</div>
+      </div>
+    `;
+    return;
+  }
+  container.innerHTML = `
+    <div class="card">
+      <div class="card-title">最近 10 次 Sessions</div>
+      <div class="card-sub">依最後一次作答時間排序</div>
+      <table>
+        <thead><tr>
+          <th>Session</th>
+          <th>Phase</th>
+          <th>Course</th>
+          <th>答題數</th>
+          <th>正確率</th>
+          <th>最後作答</th>
+        </tr></thead>
+        <tbody>
+          ${sessions.map(s => {
+            const a = s.total > 0 ? +(s.correct / s.total * 100).toFixed(1) : 0;
+            const cls = accClass(a);
+            const phaseTag =
+              s.phase === 'pretest'  ? 'tag-pre'
+              : s.phase === 'posttest' ? 'tag-post'
+              : 'tag-practice';
+            return `
+              <tr>
+                <td>${esc(s.name)}</td>
+                <td><span class="${phaseTag}">${esc(s.phase || 'practice')}</span></td>
+                <td>${esc(s.course || '—')}</td>
+                <td>${s.total}</td>
+                <td>
+                  <div class="acc-cell">
+                    <div class="acc-bar-wrap"><div class="acc-bar-fill ${cls}" style="width:${a}%"></div></div>
+                    <div class="acc-text">${a}%</div>
+                  </div>
+                </td>
+                <td>${relativeTime(s.last_attempted_at)}</td>
+              </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
 // ===== INIT =====
