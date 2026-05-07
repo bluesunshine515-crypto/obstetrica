@@ -191,6 +191,49 @@ table.clickable-rows tbody tr:hover { background: #f5f0e2; }
   .profile-stats { grid-column: 1 / -1; justify-content: flex-start; gap: 18px; }
   .profile-stat { text-align: left; }
 }
+
+/* ===== Tab 3: Wrong list ===== */
+.diff-arrow {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+  min-width: 28px;
+  text-align: center;
+}
+.diff-wrong {
+  color: var(--red);
+  background: rgba(192, 70, 58, 0.10);
+  border: 1px solid rgba(192, 70, 58, 0.25);
+}
+.diff-correct {
+  color: var(--green);
+  background: rgba(74, 124, 89, 0.10);
+  border: 1px solid rgba(74, 124, 89, 0.25);
+}
+.stats-line {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 16px; margin-bottom: 12px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+  font-size: 13px; color: var(--ink-soft);
+  flex-wrap: wrap; gap: 12px;
+}
+.stats-line b { color: var(--ink); font-weight: 600; }
+.empty-celebrate {
+  text-align: center; padding: 80px 20px; color: var(--ink-soft);
+  font-size: 18px; font-family: 'Noto Serif TC', serif;
+}
+td code {
+  font-family: 'Inter', monospace;
+  font-size: 12px;
+  background: #f5f0e2;
+  padding: 2px 6px;
+  border-radius: 3px;
+  color: var(--ink);
+}
 </style>
 </head>
 <body>
@@ -298,6 +341,33 @@ function toPct(v) {
 function accClass(pct) {
   return pct >= 70 ? 'high' : pct >= 50 ? 'mid' : 'low';
 }
+// 從 'XX-YY' 取大科別（用於 Tab 3 attempts.category 篩選）
+// 婦科-* → 婦科；產科-* → 產科；其他（含 婦癌-*）→ 其他
+function categoryMajor(cat) {
+  if (!cat) return '其他';
+  const prefix = String(cat).split('-')[0];
+  if (prefix === '婦科' || prefix === '產科') return prefix;
+  return '其他';
+}
+// 匯出 CSV（UTF-8 with BOM，Excel 讀中文不亂碼）
+function exportCsv(rows, filename) {
+  if (!rows || rows.length === 0) return;
+  const cols = Object.keys(rows[0]);
+  const escapeCell = v => {
+    if (v == null) return '';
+    const s = String(v);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const lines = [cols.join(',')];
+  rows.forEach(r => lines.push(cols.map(c => escapeCell(r[c])).join(',')));
+  const bom = '﻿';
+  const blob = new Blob([bom + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+}
 
 // ===== AUTH =====
 function showLogin() {
@@ -385,7 +455,8 @@ function switchTab(name, opts = {}) {
 
   if (name === 'overview') renderOverview();
   else if (name === 'student') renderStudentDetail();
-  // Tab 3-5 will be wired up in subsequent iterations.
+  else if (name === 'wrong') renderWrongList();
+  // Tab 4-5 will be wired up in subsequent iterations.
 }
 
 // ===== TAB 1: OVERVIEW =====
@@ -912,6 +983,196 @@ function renderRecentSessions(container, sessions) {
       </table>
     </div>
   `;
+}
+
+// ===== TAB 3: WRONG LIST =====
+let wrongFilters = { major: '', exam: '', search: '' };
+
+async function fetchStudentWrongAttempts(studentId) {
+  if (cache.studentWrong[studentId]) return cache.studentWrong[studentId];
+  const { data, error } = await supa
+    .from('attempts')
+    .select('id, question_id, category, exam, selected_answer, correct_answer, attempted_at')
+    .eq('student_id', studentId)
+    .eq('is_correct', false)
+    .order('attempted_at', { ascending: false });
+  if (error) throw error;
+  cache.studentWrong[studentId] = data || [];
+  return cache.studentWrong[studentId];
+}
+
+async function renderWrongList() {
+  const panel = document.getElementById('tab-wrong');
+  panel.innerHTML = '<div class="empty">載入學生清單中…</div>';
+
+  let students;
+  try {
+    students = await fetchOverview();
+  } catch (e) {
+    panel.innerHTML = `<div class="empty">載入失敗：${esc(e.message || String(e))}</div>`;
+    return;
+  }
+  if (!students || students.length === 0) {
+    panel.innerHTML = '<div class="empty">尚無學生資料</div>';
+    return;
+  }
+  if (!selectedStudentId || !students.find(s => s.student_id === selectedStudentId)) {
+    selectedStudentId = students[0].student_id;
+  }
+
+  panel.innerHTML = `
+    <div class="controls">
+      <div class="ctrl-group">
+        <label>選擇學生 Student</label>
+        <select id="wrongStudentPicker">
+          ${students.map(s =>
+            `<option value="${esc(s.student_id)}">${esc(s.display_name || s.email || '?')} (${esc(s.year || '?')})</option>`
+          ).join('')}
+        </select>
+      </div>
+      <div class="ctrl-group">
+        <label>大科別 Major</label>
+        <select id="wrongMajorFilter">
+          <option value="">— 全部 —</option>
+          <option value="婦科">婦科</option>
+          <option value="產科">產科</option>
+          <option value="其他">其他（含婦癌）</option>
+        </select>
+      </div>
+      <div class="ctrl-group">
+        <label>試卷 Exam</label>
+        <select id="wrongExamFilter">
+          <option value="">— 全部 —</option>
+        </select>
+      </div>
+      <div class="ctrl-group">
+        <label>搜尋 Search</label>
+        <input type="text" id="wrongSearch" placeholder="題號 / 分類…" />
+      </div>
+    </div>
+    <div id="wrongTableContent"></div>
+  `;
+
+  const picker = document.getElementById('wrongStudentPicker');
+  picker.value = selectedStudentId;
+  picker.addEventListener('change', e => {
+    selectedStudentId = e.target.value;
+    renderWrongTable();
+  });
+  document.getElementById('wrongMajorFilter').value = wrongFilters.major;
+  document.getElementById('wrongMajorFilter').addEventListener('change', e => {
+    wrongFilters.major = e.target.value;
+    renderWrongTable();
+  });
+  document.getElementById('wrongExamFilter').addEventListener('change', e => {
+    wrongFilters.exam = e.target.value;
+    renderWrongTable();
+  });
+  const searchInput = document.getElementById('wrongSearch');
+  searchInput.value = wrongFilters.search;
+  searchInput.addEventListener('input', e => {
+    wrongFilters.search = e.target.value;
+    renderWrongTable();
+  });
+
+  await renderWrongTable();
+}
+
+async function renderWrongTable() {
+  const wrap = document.getElementById('wrongTableContent');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="empty">載入錯題中…</div>';
+
+  let rows;
+  try {
+    rows = await fetchStudentWrongAttempts(selectedStudentId);
+  } catch (e) {
+    wrap.innerHTML = `<div class="empty">載入失敗：${esc(e.message || String(e))}</div>`;
+    return;
+  }
+
+  // 動態填入 exam 下拉（依該學生實際答錯過的所有 exam）
+  const examFilter = document.getElementById('wrongExamFilter');
+  const exams = [...new Set(rows.map(r => r.exam).filter(Boolean))].sort();
+  if (!exams.includes(wrongFilters.exam)) wrongFilters.exam = '';
+  examFilter.innerHTML =
+    '<option value="">— 全部 —</option>' +
+    exams.map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join('');
+  examFilter.value = wrongFilters.exam;
+
+  // 沒任何錯題：慶賀 placeholder
+  if (!rows || rows.length === 0) {
+    wrap.innerHTML = `
+      <div class="card">
+        <div class="empty-celebrate">太強了！這位學生目前沒有答錯過任何題目 🎉</div>
+      </div>`;
+    return;
+  }
+
+  // 套用三個篩選條件（AND）
+  const q = wrongFilters.search.trim().toLowerCase();
+  const filtered = rows.filter(r => {
+    if (wrongFilters.major && categoryMajor(r.category) !== wrongFilters.major) return false;
+    if (wrongFilters.exam && r.exam !== wrongFilters.exam) return false;
+    if (q) {
+      const qid = (r.question_id || '').toLowerCase();
+      const cat = (r.category || '').toLowerCase();
+      if (!qid.includes(q) && !cat.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const stu = (cache.overview || []).find(s => s.student_id === selectedStudentId);
+  const displayName = stu?.display_name || stu?.email || 'unknown';
+
+  wrap.innerHTML = `
+    <div class="stats-line">
+      <span>共 <b>${rows.length}</b> 題錯誤 ｜ 套用篩選後顯示 <b>${filtered.length}</b> 題</span>
+      <button class="btn btn-secondary" id="wrongExportBtn" ${filtered.length === 0 ? 'disabled' : ''}>📥 匯出 CSV</button>
+    </div>
+    ${filtered.length === 0
+      ? '<div class="card"><div class="empty">目前篩選條件下沒有錯題</div></div>'
+      : `<div class="card" style="padding:0;overflow:hidden;">
+          <table>
+            <thead><tr>
+              <th>題號 Q-ID</th>
+              <th>分類 Category</th>
+              <th>你的答案</th>
+              <th>正解</th>
+              <th>試卷 Exam</th>
+              <th>答錯時間</th>
+            </tr></thead>
+            <tbody>
+              ${filtered.map(r => `
+                <tr>
+                  <td><code>${esc(r.question_id)}</code></td>
+                  <td>${esc(r.category || '—')}</td>
+                  <td><span class="diff-arrow diff-wrong">${esc(r.selected_answer || '-')}</span></td>
+                  <td><span class="diff-arrow diff-correct">${esc(r.correct_answer || '-')}</span></td>
+                  <td>${esc(r.exam || '—')}</td>
+                  <td>${relativeTime(r.attempted_at)}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`}
+  `;
+
+  const btn = document.getElementById('wrongExportBtn');
+  if (btn && !btn.disabled) {
+    btn.addEventListener('click', () => {
+      const today = new Date().toISOString().substring(0, 10);
+      const safe = displayName.replace(/[\\\/:*?"<>|]/g, '_');
+      const csvRows = filtered.map(r => ({
+        question_id:     r.question_id,
+        category:        r.category,
+        selected_answer: r.selected_answer,
+        correct_answer:  r.correct_answer,
+        exam:            r.exam,
+        attempted_at:    r.attempted_at,
+      }));
+      exportCsv(csvRows, `${safe}_錯題_${today}.csv`);
+    });
+  }
 }
 
 // ===== INIT =====
