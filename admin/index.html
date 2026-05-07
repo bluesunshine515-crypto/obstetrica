@@ -234,6 +234,40 @@ td code {
   border-radius: 3px;
   color: var(--ink);
 }
+
+/* ===== Tab 4: Weakness analysis ===== */
+.toggle-group {
+  display: inline-flex; border: 1px solid var(--line); border-radius: 6px;
+  overflow: hidden; background: var(--card);
+}
+.toggle-btn {
+  padding: 8px 16px; background: var(--card); border: none;
+  border-right: 1px solid var(--line);
+  font: inherit; cursor: pointer; color: var(--ink-soft); white-space: nowrap;
+}
+.toggle-btn:last-child { border-right: none; }
+.toggle-btn:hover { background: #f5f0e2; }
+.toggle-btn.active { background: var(--ink); color: var(--paper); font-weight: 500; }
+.chip-group { display: inline-flex; gap: 6px; flex-wrap: wrap; padding-top: 4px; }
+.chip {
+  padding: 6px 14px; background: var(--card); border: 1px solid var(--line);
+  border-radius: 16px; font: inherit; font-size: 13px; cursor: pointer;
+  color: var(--ink-soft); user-select: none;
+}
+.chip:hover { background: #f5f0e2; }
+.chip.active { background: var(--ink); color: var(--paper); border-color: var(--ink); font-weight: 500; }
+.weakness-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.weak-chip {
+  display: inline-flex; align-items: baseline; gap: 8px;
+  padding: 6px 12px; border-radius: 14px; font-size: 13px;
+  font-variant-numeric: tabular-nums; border: 1px solid;
+}
+.weak-chip.low  { color: var(--red);   background: rgba(192,70,58,0.08); border-color: rgba(192,70,58,0.3); }
+.weak-chip.mid  { color: var(--gold);  background: rgba(176,141,79,0.08); border-color: rgba(176,141,79,0.3); }
+.weak-chip.high { color: var(--green); background: rgba(74,124,89,0.08); border-color: rgba(74,124,89,0.3); }
+.weak-chip-name   { font-weight: 500; }
+.weak-chip-acc    { font-weight: 700; }
+.weak-chip-counts { color: var(--ink-mute); font-size: 11px; }
 </style>
 </head>
 <body>
@@ -456,7 +490,8 @@ function switchTab(name, opts = {}) {
   if (name === 'overview') renderOverview();
   else if (name === 'student') renderStudentDetail();
   else if (name === 'wrong') renderWrongList();
-  // Tab 4-5 will be wired up in subsequent iterations.
+  else if (name === 'weakness') renderWeakness();
+  // Tab 5 will be wired up in subsequent iterations.
 }
 
 // ===== TAB 1: OVERVIEW =====
@@ -1173,6 +1208,224 @@ async function renderWrongTable() {
       exportCsv(csvRows, `${safe}_錯題_${today}.csv`);
     });
   }
+}
+
+// ===== TAB 4: WEAKNESS ANALYSIS =====
+let weaknessMode = 'class';                                      // 'class' | 'student'
+let weaknessSortAsc = true;                                       // true = 最弱在頂
+const weaknessMajorFilter = new Set(['婦科', '產科', '其他']);   // 預設全選
+
+async function fetchClassTopicStats() {
+  if (cache.classTopic) return cache.classTopic;
+  const { data, error } = await supa.from('v_class_topic_stats').select('*');
+  if (error) throw error;
+  // 正規化欄位（class view 用 total_attempts/class_accuracy；student view 用 total/accuracy_rate）
+  cache.classTopic = (data || []).map(r => ({
+    major_topic: r.major_topic,
+    sub_topic:   r.sub_topic,
+    total:       Number(r.total_attempts) || 0,
+    correct:     Number(r.correct) || 0,
+    accuracy:    toPct(r.class_accuracy),
+    unique_students: Number(r.unique_students) || 0,
+  }));
+  return cache.classTopic;
+}
+
+async function renderWeakness() {
+  const panel = document.getElementById('tab-weakness');
+  panel.innerHTML = '<div class="empty">載入中…</div>';
+
+  let students;
+  try {
+    students = await fetchOverview();
+  } catch (e) {
+    panel.innerHTML = `<div class="empty">載入失敗：${esc(e.message || String(e))}</div>`;
+    return;
+  }
+  if (!students || students.length === 0) {
+    panel.innerHTML = '<div class="empty">尚無學生資料</div>';
+    return;
+  }
+  if (weaknessMode === 'student') {
+    if (!selectedStudentId || !students.find(s => s.student_id === selectedStudentId)) {
+      selectedStudentId = students[0].student_id;
+    }
+  }
+
+  panel.innerHTML = `
+    <div class="controls">
+      <div class="ctrl-group">
+        <label>視角 View</label>
+        <div class="toggle-group">
+          <button class="toggle-btn ${weaknessMode === 'class'   ? 'active' : ''}" data-mode="class">📚 班級</button>
+          <button class="toggle-btn ${weaknessMode === 'student' ? 'active' : ''}" data-mode="student">👤 個別</button>
+        </div>
+      </div>
+      <div class="ctrl-group" id="weaknessStudentGroup" style="${weaknessMode === 'class' ? 'display:none;' : ''}">
+        <label>學生 Student</label>
+        <select id="weaknessStudentPicker">
+          ${students.map(s =>
+            `<option value="${esc(s.student_id)}">${esc(s.display_name || s.email || '?')} (${esc(s.year || '?')})</option>`
+          ).join('')}
+        </select>
+      </div>
+      <div class="ctrl-group">
+        <label>排序 Sort</label>
+        <button class="btn btn-secondary" id="weaknessSortBtn">${weaknessSortAsc ? '📉 最弱在頂' : '📈 最強在頂'}</button>
+      </div>
+      <div class="ctrl-group">
+        <label>大科別 Major（可多選）</label>
+        <div class="chip-group" id="weaknessMajorChips">
+          <button class="chip ${weaknessMajorFilter.has('婦科') ? 'active' : ''}" data-major="婦科">婦科</button>
+          <button class="chip ${weaknessMajorFilter.has('產科') ? 'active' : ''}" data-major="產科">產科</button>
+          <button class="chip ${weaknessMajorFilter.has('其他') ? 'active' : ''}" data-major="其他">其他</button>
+        </div>
+      </div>
+    </div>
+    <div id="weaknessContent"></div>
+  `;
+
+  panel.querySelectorAll('.toggle-btn[data-mode]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (weaknessMode === btn.dataset.mode) return;
+      weaknessMode = btn.dataset.mode;
+      renderWeakness(); // 全 re-render（picker 顯隱要切換）
+    });
+  });
+  if (weaknessMode === 'student') {
+    const picker = document.getElementById('weaknessStudentPicker');
+    picker.value = selectedStudentId;
+    picker.addEventListener('change', e => {
+      selectedStudentId = e.target.value;
+      renderWeaknessChart();
+    });
+  }
+  document.getElementById('weaknessSortBtn').addEventListener('click', e => {
+    weaknessSortAsc = !weaknessSortAsc;
+    e.currentTarget.textContent = weaknessSortAsc ? '📉 最弱在頂' : '📈 最強在頂';
+    renderWeaknessChart();
+  });
+  panel.querySelectorAll('.chip[data-major]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const m = btn.dataset.major;
+      if (weaknessMajorFilter.has(m)) weaknessMajorFilter.delete(m);
+      else weaknessMajorFilter.add(m);
+      btn.classList.toggle('active');
+      renderWeaknessChart();
+    });
+  });
+
+  await renderWeaknessChart();
+}
+
+async function renderWeaknessChart() {
+  const wrap = document.getElementById('weaknessContent');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="empty">載入中…</div>';
+
+  let rawRows;
+  try {
+    if (weaknessMode === 'class') {
+      rawRows = await fetchClassTopicStats();
+    } else {
+      const raw = await fetchStudentTopicStats(selectedStudentId);
+      rawRows = (raw || []).map(r => ({
+        major_topic: r.major_topic,
+        sub_topic:   r.sub_topic,
+        total:       Number(r.total) || 0,
+        correct:     Number(r.correct) || 0,
+        accuracy:    toPct(r.accuracy_rate),
+      }));
+    }
+  } catch (e) {
+    destroyChart('weaknessChart');
+    wrap.innerHTML = `<div class="empty">載入失敗：${esc(e.message || String(e))}</div>`;
+    return;
+  }
+
+  if (!rawRows || rawRows.length === 0) {
+    destroyChart('weaknessChart');
+    wrap.innerHTML = `<div class="empty">${weaknessMode === 'student' ? '該學生尚無答題紀錄' : '尚無班級資料'}</div>`;
+    return;
+  }
+
+  // Major filter（用 categoryMajor 把婦癌等歸到「其他」）
+  const filtered = rawRows.filter(r => weaknessMajorFilter.has(categoryMajor(r.major_topic)));
+  // Sort
+  filtered.sort((a, b) => weaknessSortAsc ? a.accuracy - b.accuracy : b.accuracy - a.accuracy);
+
+  if (filtered.length === 0) {
+    destroyChart('weaknessChart');
+    wrap.innerHTML = '<div class="card"><div class="empty">沒有符合大科別篩選的子主題（請打開更多 chip）</div></div>';
+    return;
+  }
+
+  // 動態高度（每列 ~26px，最少 240px）
+  const chartH = Math.max(filtered.length * 26 + 60, 240);
+
+  const stu = (cache.overview || []).find(s => s.student_id === selectedStudentId);
+  const subTitle = weaknessMode === 'class'
+    ? `班級視角 · ${filtered.length} 個子主題`
+    : `${esc(stu?.display_name || stu?.email || '?')} · ${filtered.length} 個子主題`;
+  const sortLabel = weaknessSortAsc ? '正確率升序（最弱在頂）' : '正確率降序（最強在頂）';
+
+  wrap.innerHTML = `
+    <div class="card">
+      <div class="card-title">${weaknessMode === 'class' ? '班級弱項分布 Class Weakness' : '個人弱項分布 Personal Weakness'}</div>
+      <div class="card-sub">${subTitle} · ${sortLabel}</div>
+      <div class="chart-wrap" style="height:${chartH}px; position:relative;">
+        <canvas id="weaknessChart"></canvas>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">子主題清單 Sub-topic List</div>
+      <div class="card-sub">同上圖資料；顏色依正確率閾值（&lt;50% 紅、50–70% 黃、≥70% 綠）</div>
+      <div class="weakness-chips">
+        ${filtered.map(r => `
+          <div class="weak-chip ${accClass(r.accuracy)}">
+            <span class="weak-chip-name">${esc(r.sub_topic || '?')}</span>
+            <span class="weak-chip-acc">${r.accuracy.toFixed(1)}%</span>
+            <span class="weak-chip-counts">(${r.correct}/${r.total})</span>
+          </div>`).join('')}
+      </div>
+    </div>
+  `;
+
+  destroyChart('weaknessChart');
+  charts.weaknessChart = new Chart(document.getElementById('weaknessChart'), {
+    type: 'bar',
+    data: {
+      labels: filtered.map(r => r.sub_topic),
+      datasets: [{
+        label: '正確率 (%)',
+        data: filtered.map(r => r.accuracy),
+        backgroundColor: filtered.map(r =>
+          r.accuracy >= 70 ? '#4a7c59' : r.accuracy >= 50 ? '#b08d4f' : '#a3522e'
+        ),
+        borderWidth: 0,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { min: 0, max: 100, title: { display: true, text: '正確率 %' } },
+        y: { ticks: { autoSkip: false } },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const r = filtered[ctx.dataIndex];
+              return `${r.accuracy.toFixed(1)}% (${r.correct}/${r.total})`;
+            }
+          }
+        }
+      }
+    }
+  });
 }
 
 // ===== INIT =====
