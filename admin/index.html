@@ -268,6 +268,126 @@ td code {
 .weak-chip-name   { font-weight: 500; }
 .weak-chip-acc    { font-weight: 700; }
 .weak-chip-counts { color: var(--ink-mute); font-size: 11px; }
+
+/* ===== Tab 5: Misconception analysis ===== */
+.mc-intro {
+  background: rgba(176, 141, 79, 0.06);
+  border: 1px solid rgba(176, 141, 79, 0.35);
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--ink-soft);
+  line-height: 1.65;
+}
+.mc-intro b { color: var(--ink); }
+.misconception-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+  margin-top: 12px;
+}
+@media (max-width: 980px) {
+  .misconception-grid { grid-template-columns: 1fr; }
+}
+.mc-card {
+  position: relative;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.mc-warning-badge {
+  position: absolute;
+  top: -10px;
+  right: 14px;
+  background: var(--red);
+  color: var(--paper);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  box-shadow: 0 2px 8px rgba(192, 70, 58, 0.35);
+  z-index: 1;
+}
+.mc-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+}
+.mc-qid {
+  font-family: 'Inter', monospace;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 3px 10px;
+  background: #f5f0e2;
+  border-radius: 4px;
+  border: 1px dashed transparent;
+  transition: border-color 0.15s, background 0.15s;
+  user-select: all;
+}
+.mc-qid:hover { border-color: var(--gold); background: #ede4c8; }
+.mc-tags {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  font-size: 12px; color: var(--ink-soft);
+  align-items: baseline;
+}
+.mc-tag-cat { color: var(--teal); font-weight: 500; }
+.mc-acc-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 0;
+  border-top: 1px dashed var(--line);
+  border-bottom: 1px dashed var(--line);
+}
+.mc-acc-block { flex-shrink: 0; }
+.mc-acc-label {
+  font-size: 11px; color: var(--ink-mute);
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.mc-acc-value {
+  font-size: 28px; font-weight: 600;
+  font-family: 'Noto Serif TC', serif;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.mc-acc-value.low  { color: var(--red); }
+.mc-acc-value.mid  { color: var(--gold); }
+.mc-acc-value.high { color: var(--green); }
+.mc-acc-meta {
+  font-size: 12px; color: var(--ink-soft);
+  line-height: 1.6; flex: 1; min-width: 0;
+}
+.mc-acc-meta b { color: var(--ink); }
+.mc-no-distractor { color: var(--ink-mute); font-style: italic; }
+.mc-chart-wrap { position: relative; height: 180px; }
+
+/* Range slider polish */
+input[type=range] { accent-color: var(--gold); }
+
+/* Toast */
+.toast {
+  position: fixed;
+  bottom: 32px; left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: var(--ink); color: var(--paper);
+  padding: 10px 20px; border-radius: 6px;
+  font-size: 14px; z-index: 1000;
+  opacity: 0;
+  transition: opacity 0.25s, transform 0.25s;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 </style>
 </head>
 <body>
@@ -491,7 +611,7 @@ function switchTab(name, opts = {}) {
   else if (name === 'student') renderStudentDetail();
   else if (name === 'wrong') renderWrongList();
   else if (name === 'weakness') renderWeakness();
-  // Tab 5 will be wired up in subsequent iterations.
+  else if (name === 'misconception') renderMisconceptions();
 }
 
 // ===== TAB 1: OVERVIEW =====
@@ -1425,6 +1545,292 @@ async function renderWeaknessChart() {
         }
       }
     }
+  });
+}
+
+// ===== TAB 5: MISCONCEPTION ANALYSIS =====
+const misconceptionFilters = {
+  majors: new Set(['婦科', '產科', '其他']),
+  exam: '',
+  minAttempts: 2,
+};
+let misconceptionSortBy = 'distractor_concentration';
+// 'distractor_concentration' | 'class_accuracy' | 'total_attempts'
+
+async function fetchMisconceptionHotspots() {
+  if (cache.hotspots) return cache.hotspots;
+  const { data, error } = await supa.from('v_misconception_hotspots').select('*');
+  if (error) throw error;
+  cache.hotspots = data || [];
+  return cache.hotspots;
+}
+
+// 簡易 toast
+function showToast(msg) {
+  let toast = document.getElementById('globalToast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'globalToast';
+    toast.className = 'toast';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => toast.classList.remove('show'), 1800);
+}
+
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // fallback for non-secure contexts
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch {}
+    document.body.removeChild(ta);
+  }
+  showToast(`已複製 ${text}`);
+}
+
+// 把 question_id 變成合法的 HTML id 後綴
+function safeId(s) {
+  return String(s || '').replace(/[^a-zA-Z0-9-]/g, '_');
+}
+
+async function renderMisconceptions() {
+  const panel = document.getElementById('tab-misconception');
+  panel.innerHTML = '<div class="empty">載入中…</div>';
+
+  let rows;
+  try {
+    rows = await fetchMisconceptionHotspots();
+  } catch (e) {
+    panel.innerHTML = `<div class="empty">載入失敗：${esc(e.message || String(e))}</div>`;
+    return;
+  }
+
+  if (!rows || rows.length === 0) {
+    panel.innerHTML = `
+      <div class="mc-intro">
+        <b>📌 誘答熱點 (Misconception Hotspots)：</b>班級正確率 &lt; 70% 的題目，依「最多錯誤集中於同一錯誤選項」排序。集中度愈高，代表觀念誤解愈一致，建議全班討論。
+      </div>
+      <div class="empty">目前尚無誘答熱點資料</div>`;
+    return;
+  }
+
+  // 動態 exam 選項（從 13 rows 拉）
+  const exams = [...new Set(rows.map(r => r.exam).filter(Boolean))].sort();
+
+  panel.innerHTML = `
+    <div class="mc-intro">
+      <b>📌 誘答熱點 (Misconception Hotspots)：</b>班級正確率 &lt; 70% 的題目，依「最多錯誤集中於同一錯誤選項」排序。集中度愈高，代表觀念誤解愈一致，建議全班討論。
+    </div>
+
+    <div class="controls">
+      <div class="ctrl-group">
+        <label>大科別 Major（可多選）</label>
+        <div class="chip-group" id="mcMajorChips">
+          <button class="chip ${misconceptionFilters.majors.has('婦科') ? 'active' : ''}" data-major="婦科">婦科</button>
+          <button class="chip ${misconceptionFilters.majors.has('產科') ? 'active' : ''}" data-major="產科">產科</button>
+          <button class="chip ${misconceptionFilters.majors.has('其他') ? 'active' : ''}" data-major="其他">其他</button>
+        </div>
+      </div>
+      <div class="ctrl-group">
+        <label>試卷 Exam</label>
+        <select id="mcExamFilter">
+          <option value="">— 全部 —</option>
+          ${exams.map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="ctrl-group">
+        <label>最少答題數：<b id="mcMinLabel">${misconceptionFilters.minAttempts}</b> 人</label>
+        <input type="range" id="mcMinSlider" min="1" max="7" step="1" value="${misconceptionFilters.minAttempts}" style="min-width:180px;"/>
+      </div>
+      <div class="ctrl-group">
+        <label>排序 Sort</label>
+        <select id="mcSortBy">
+          <option value="distractor_concentration">誘答集中度（高→低）</option>
+          <option value="class_accuracy">班級正確率（低→高）</option>
+          <option value="total_attempts">答題人數（多→少）</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="mcGrid"></div>
+  `;
+
+  document.getElementById('mcExamFilter').value = misconceptionFilters.exam;
+  document.getElementById('mcSortBy').value = misconceptionSortBy;
+
+  panel.querySelectorAll('.chip[data-major]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const m = btn.dataset.major;
+      if (misconceptionFilters.majors.has(m)) misconceptionFilters.majors.delete(m);
+      else misconceptionFilters.majors.add(m);
+      btn.classList.toggle('active');
+      renderMisconceptionGrid();
+    });
+  });
+  document.getElementById('mcExamFilter').addEventListener('change', e => {
+    misconceptionFilters.exam = e.target.value;
+    renderMisconceptionGrid();
+  });
+  document.getElementById('mcMinSlider').addEventListener('input', e => {
+    misconceptionFilters.minAttempts = Number(e.target.value);
+    document.getElementById('mcMinLabel').textContent = e.target.value;
+    renderMisconceptionGrid();
+  });
+  document.getElementById('mcSortBy').addEventListener('change', e => {
+    misconceptionSortBy = e.target.value;
+    renderMisconceptionGrid();
+  });
+
+  renderMisconceptionGrid();
+}
+
+function renderMisconceptionGrid() {
+  const grid = document.getElementById('mcGrid');
+  if (!grid) return;
+
+  // 每次重畫前 destroy 所有 mc-chart-* 圖表
+  Object.keys(charts).forEach(id => {
+    if (id.startsWith('mc-chart-')) destroyChart(id);
+  });
+
+  const rows = cache.hotspots || [];
+  const filtered = rows.filter(r => {
+    if (!misconceptionFilters.majors.has(categoryMajor(r.category))) return false;
+    if (misconceptionFilters.exam && r.exam !== misconceptionFilters.exam) return false;
+    if ((Number(r.total_attempts) || 0) < misconceptionFilters.minAttempts) return false;
+    return true;
+  });
+
+  filtered.sort((a, b) => {
+    if (misconceptionSortBy === 'class_accuracy') {
+      return toPct(a.class_accuracy) - toPct(b.class_accuracy);   // ASC
+    }
+    if (misconceptionSortBy === 'total_attempts') {
+      return (Number(b.total_attempts) || 0) - (Number(a.total_attempts) || 0); // DESC
+    }
+    // distractor_concentration DESC（預設）
+    return toPct(b.distractor_concentration) - toPct(a.distractor_concentration);
+  });
+
+  if (filtered.length === 0) {
+    grid.innerHTML = `<div class="card"><div class="empty">目前篩選條件下沒有誘答熱點 🎯 — 試著放寬條件</div></div>`;
+    return;
+  }
+
+  grid.innerHTML = `
+    <div class="stats-line">
+      <span>共 <b>${rows.length}</b> 個熱點 ｜ 套用篩選後顯示 <b>${filtered.length}</b> 個</span>
+    </div>
+    <div class="misconception-grid">
+      ${filtered.map(r => {
+        const acc  = toPct(r.class_accuracy);
+        const conc = toPct(r.distractor_concentration);
+        const isSystemic = conc >= 60 && acc < 50;
+        const sid = safeId(r.question_id);
+        const correct = String(r.correct_answer || '').toUpperCase();
+        const topD    = String(r.top_distractor  || '').toUpperCase();
+        return `
+          <div class="mc-card">
+            ${isSystemic ? '<div class="mc-warning-badge">⚠️ 系統性觀念錯誤</div>' : ''}
+            <div class="mc-card-header">
+              <span class="mc-qid" data-qid="${esc(r.question_id)}" title="點擊複製題號">${esc(r.question_id)}</span>
+              <span class="mc-tags">
+                <span class="mc-tag-cat">${esc(r.category || '—')}</span>
+                <span>·</span>
+                <span>${esc(r.exam || '—')}</span>
+              </span>
+            </div>
+            <div class="mc-acc-row">
+              <div class="mc-acc-block">
+                <div class="mc-acc-label">班級正確率</div>
+                <div class="mc-acc-value ${accClass(acc)}">${acc}%</div>
+              </div>
+              <div class="mc-acc-meta">
+                正解 <b>${esc(correct || '?')}</b>
+                ${topD
+                  ? ` · 最常誤選 <b style="color:var(--red);">${esc(topD)}</b>（集中度 ${conc}%）`
+                  : ' · <span class="mc-no-distractor">無明顯誘答集中</span>'}
+                <br>${Number(r.total_attempts) || 0} 人作答 · ${Number(r.correct_count) || 0} 答對
+              </div>
+            </div>
+            <div class="mc-chart-wrap">
+              <canvas id="mc-chart-${sid}"></canvas>
+            </div>
+          </div>`;
+      }).join('')}
+    </div>
+  `;
+
+  // 點題號複製
+  grid.querySelectorAll('.mc-qid').forEach(el => {
+    el.addEventListener('click', () => copyToClipboard(el.dataset.qid));
+  });
+
+  // 每張卡的 chart
+  filtered.forEach(r => {
+    const sid = safeId(r.question_id);
+    const chartId = `mc-chart-${sid}`;
+    const canvas = document.getElementById(chartId);
+    if (!canvas) return;
+
+    const labels = ['A', 'B', 'C', 'D', 'E'];
+    const data = [
+      Number(r.chose_a) || 0,
+      Number(r.chose_b) || 0,
+      Number(r.chose_c) || 0,
+      Number(r.chose_d) || 0,
+      Number(r.chose_e) || 0,
+    ];
+    const correct = String(r.correct_answer || '').toUpperCase();
+    const topD    = String(r.top_distractor  || '').toUpperCase();
+    const colors = labels.map(L =>
+      L === correct ? '#4a7c59' :
+      (topD && L === topD) ? '#c0463a' :
+      '#d8d3c5'
+    );
+
+    charts[chartId] = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: '人數',
+          data,
+          backgroundColor: colors,
+          borderWidth: 0,
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            beginAtZero: true,
+            ticks: { stepSize: 1, precision: 0 },
+            title: { display: true, text: '選擇人數' },
+          },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const L = labels[ctx.dataIndex];
+                const tag = L === correct ? '（正解）' : (topD && L === topD) ? '（最常誤選）' : '';
+                return `${data[ctx.dataIndex]} 人 ${tag}`;
+              }
+            }
+          }
+        }
+      }
+    });
   });
 }
 
