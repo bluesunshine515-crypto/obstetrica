@@ -3258,7 +3258,7 @@ async function startQuiz() {
     // fail-open：insert 失敗就退回 sharedMap 行為，不擋學生答題
     const dbPhase = rotationPhase === 'pre' ? 'pretest' : 'posttest';
     if (!rotationName) {
-      console.error('[v1.8] rotation_title 抓不到值！phase=', dbPhase, '可能是 DOM id 又改名了，請檢查 obstetrica.html');
+      console.error('[v1.8] rotation_title 抓不到值！phase=', dbPhase, '可能是 DOM id 又改名了，請檢查 index.html');
     }
     console.log('[v1.8] INSERT exam_session with rotation_title:', rotationName, '· phase=', dbPhase);
     try {

@@ -545,7 +545,7 @@ Supabase：https://supabase.com/dashboard
 
 ```
 專案根目錄：C:\Users\88691\obstetrica-site\
-學生端 HTML：index.html / obstetrica.html
+學生端 HTML：index.html
 老師後台：obstetrica-admin.html
 SQL migrations：supabase\migrations\
 部署腳本：deploy.ps1 / deploy.bat
