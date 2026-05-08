@@ -553,11 +553,80 @@ SQL migrations：supabase\migrations\
 
 ---
 
+## 🏗 Part 13：版本設計決策
+
+> 把「規格沒寫、但實作上有取捨」的設計決策記下來，避免未來重做或踩同樣坑。
+> 每個版本的關鍵 design call 都應該在這裡留一段。
+
+### v1.8 — 學生端 rotation 寫入 DB
+
+#### 1️⃣ rotation 模式採用「每次答題建獨立 session」（策略 A）
+
+**問題背景**：v1.7 之前 `obstetrica.html` 對 `exam_sessions` 只有 `loadSessionMap()` 一個 SELECT，全班學生所有 pretest attempts 塞同一筆共享 session，rotation_title 完全沒進 DB。本次 Step 2 不是「加一個欄位」這麼簡單，是**新增整個 session 建立流程**。
+
+**兩個可選策略**：
+- **A. 每次 rotation 答題都 INSERT 新 session**（採用）
+- **B. 每個 (rotation_title_normalized, phase) 共用一筆 session**
+
+**選 A 的理由**：
+- 簡單：`startQuiz()` 一個 INSERT，不用先 query 再判斷
+- 無 race condition：兩個學生同時點「開始」各自建自己的 row
+- `attempts` 表本就有 `unique(student_id, session_id, question_id)` 約束，cohort 級分析靠 `GROUP BY rotation_title_normalized` 即可達成
+- DB row 數線性成長但可控（7 學生 × 2 phase × N rotation/月，每月 ~28 rows）
+
+#### 2️⃣ rotationName (client) ↔ rotation_title (DB) 命名 mapping
+
+| 層 | 命名 |
+|---|---|
+| DOM id / client 變數 | `rotationName`（既有，不動） |
+| DB 欄位 | `exam_sessions.rotation_title` |
+| DB 欄位（trigger 算） | `rotation_title_normalized` |
+
+INSERT 時 mapping：`rotation_title: rotationName`。`rotation_title_normalized` 由 DB trigger 自動算，前端不送。
+
+⚠️ 後續若想把 client 變數改成 `rotationTitle` 對齊 DB：`rotationName` 散在 `quizState` / `record` / `localStorage.obg_history` / 多處 UI string，全 rename 風險高，不建議動。
+
+#### 3️⃣ 新舊 attempts 在 view 層用 rotation_title_normalized 區分
+
+v1.8 部署後 DB 會有兩種 session：
+- **舊 session**（v1.7 之前共享的 2~3 筆）：`rotation_title IS NULL`
+- **新 session**（v1.8 起每次 rotation 建立）：`rotation_title_normalized IS NOT NULL`
+
+Step 3 寫新 view 時用 `WHERE rotation_title_normalized IS NOT NULL` 過濾掉舊資料。
+
+**v1.7 既有 5 個 view 刻意不動**：admin Tab 1 的 `sessions_count` 預期會變大（從 2~3 → 每位學生實際答過的 rotation 次數），這是 feature not bug ─ session 粒度對齊「學習單元」更貼近教學語意。
+
+#### 4️⃣ exam_sessions INSERT 採 fail-open
+
+INSERT 失敗時不擋學生答題，退回 v1.7 sharedMap 行為：
+
+```js
+// startQuiz 內：
+try {
+  const { data, error } = await supa.from('exam_sessions').insert({...}).select('id').single();
+  if (error) console.warn('exam_sessions insert failed, fallback to sharedMap:', error);
+  else rotationSessionId = data?.id || null;
+} catch (e) { console.warn(...); }
+
+// uploadAttempts 內：
+const session_id = record.session_id || sessionMap[phase];
+```
+
+行為矩陣：
+- INSERT 成功 → attempts 寫到新 session（rotation_title 落地）
+- INSERT 失敗 → attempts 仍寫入但掛在舊共享 session（rotation_title 失蹤、題目不流失）
+- 舊 localStorage record 重 upload → 走 fallback（向後相容，舊資料不會壞）
+
+監控建議：上線後一段時間 grep client console 看 `exam_sessions insert failed` 出現頻率，>1% 就要改 fail-closed。
+
+---
+
 ## 📝 版本歷史
 
 | 版本 | 日期 | 更新內容 |
 |---|---|---|
 | v1.0 | 2026-05 | 初版：完整 SOP，含 12 個 Part |
+| v1.1 | 2026-05 | 加 Part 13 版本設計決策（v1.8 rotation 落地） |
 
 ---
 

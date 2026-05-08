@@ -2657,7 +2657,9 @@ async function uploadAttempts(record) {
   if (record.mode === 'rotation') {
     phase = record.rotationPhase === 'pre' ? 'pretest' : 'posttest';
   }
-  const session_id = sessionMap[phase];
+  // v1.8: rotation 模式優先用 record 帶的 per-rotation session_id；
+  // 缺值（舊 localStorage record / insert 失敗 fallback / non-rotation）退回 sharedMap
+  const session_id = record.session_id || sessionMap[phase];
   if (!session_id) { console.warn('no session_id for phase', phase); return; }
   const total = record.detail.length || 1;
   const avgSec = Math.round(record.durationSec / total);
@@ -3229,7 +3231,7 @@ function updateFilterSummary() {
 }
 
 // ===== START QUIZ =====
-function startQuiz() {
+async function startQuiz() {
   const pool = getFilteredPool();
   if (pool.length === 0) {
     alert('沒有符合條件的題目');
@@ -3240,14 +3242,37 @@ function startQuiz() {
   let timeLimit = null;
   let rotationName = null;
   let rotationPhase = null;
+  let rotationSessionId = null;
 
   if (currentMode === 'rotation') {
     rotationName = document.getElementById('rotationName').value.trim();
     if (!rotationName) {
-      alert('請輸入 Rotation 名稱');
+      alert('請填寫 Rotation 名稱才能建立前後測 session');
+      document.getElementById('rotationName').focus();
       return;
     }
     rotationPhase = document.querySelector('#rotationPhase .chip.active').dataset.phase;
+
+    // v1.8: 為這次 rotation 建立獨立 exam_session，把 rotation_title 寫進 DB
+    // rotation_title_normalized 由 DB trigger 自動算，前端不送
+    // fail-open：insert 失敗就退回 sharedMap 行為，不擋學生答題
+    const dbPhase = rotationPhase === 'pre' ? 'pretest' : 'posttest';
+    try {
+      const { data, error } = await supa.from('exam_sessions').insert({
+        name: `Rotation · ${rotationName} · ${dbPhase === 'pretest' ? '前測' : '後測'}`,
+        phase: dbPhase,
+        course: '住院醫師訓練 2026',
+        rotation_title: rotationName,
+      }).select('id').single();
+      if (error) {
+        console.warn('exam_sessions insert failed, fallback to sharedMap:', error);
+      } else {
+        rotationSessionId = data?.id || null;
+      }
+    } catch (e) {
+      console.warn('exam_sessions insert exception, fallback to sharedMap:', e);
+    }
+
     // Use all questions in pool, deterministic order based on rotation name (so pre/post matches)
     questions = [...pool].sort((a, b) => a.id.localeCompare(b.id));
     // For post-test: shuffle options using seeded random based on rotation+id
@@ -3270,6 +3295,7 @@ function startQuiz() {
   quizState = {
     mode: currentMode,
     rotationName, rotationPhase,
+    session_id: rotationSessionId,  // v1.8: per-rotation session id；practice/exam 為 null
     questions,
     answers: new Array(questions.length).fill(null),
     currentIdx: 0,
@@ -3592,6 +3618,7 @@ function submitQuiz(timeUp) {
     mode: quizState.mode,
     rotationName: quizState.rotationName,
     rotationPhase: quizState.rotationPhase,
+    session_id: quizState.session_id,  // v1.8: 帶到 uploadAttempts
     total: quizState.questions.length,
     correct,
     completedAt: new Date().toISOString(),
