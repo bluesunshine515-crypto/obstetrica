@@ -3257,6 +3257,10 @@ async function startQuiz() {
     // rotation_title_normalized 由 DB trigger 自動算，前端不送
     // fail-open：insert 失敗就退回 sharedMap 行為，不擋學生答題
     const dbPhase = rotationPhase === 'pre' ? 'pretest' : 'posttest';
+    if (!rotationName) {
+      console.error('[v1.8] rotation_title 抓不到值！phase=', dbPhase, '可能是 DOM id 又改名了，請檢查 obstetrica.html');
+    }
+    console.log('[v1.8] INSERT exam_session with rotation_title:', rotationName, '· phase=', dbPhase);
     try {
       const { data, error } = await supa.from('exam_sessions').insert({
         name: `Rotation · ${rotationName} · ${dbPhase === 'pretest' ? '前測' : '後測'}`,
@@ -3265,12 +3269,13 @@ async function startQuiz() {
         rotation_title: rotationName,
       }).select('id').single();
       if (error) {
-        console.warn('exam_sessions insert failed, fallback to sharedMap:', error);
+        console.warn('[v1.8] exam_sessions insert failed, fallback to sharedMap:', error);
       } else {
         rotationSessionId = data?.id || null;
+        console.log('[v1.8] exam_session created · id=', rotationSessionId);
       }
     } catch (e) {
-      console.warn('exam_sessions insert exception, fallback to sharedMap:', e);
+      console.warn('[v1.8] exam_sessions insert exception, fallback to sharedMap:', e);
     }
 
     // Use all questions in pool, deterministic order based on rotation name (so pre/post matches)
