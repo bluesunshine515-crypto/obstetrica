@@ -2432,8 +2432,8 @@ main {
         <div class="filter-row">
           <div class="filter-row-label">Rotation 名稱<span class="filter-row-label-sub">Rotation Title</span></div>
           <div>
-            <input type="text" class="form-input" id="rotationName" placeholder="例：婦癌 1 月份 rotation"/>
-            <div class="form-help">同名 rotation + 同編號學員會自動配對前後測</div>
+            <input type="text" class="form-input" id="rotationName" placeholder="例：11501" pattern="\d{5}" inputmode="numeric" maxlength="5" title="請輸入 5 位數字梯次代碼，例如 11501"/>
+            <div class="form-help">請輸入 5 位數字梯次代碼（例：11501）。同梯前後測會在系統內自動配對。</div>
           </div>
         </div>
         <div class="filter-row">
@@ -3249,6 +3249,13 @@ async function startQuiz() {
     if (!rotationName) {
       alert('請填寫 Rotation 名稱才能建立前後測 session');
       document.getElementById('rotationName').focus();
+      return;
+    }
+    // v1.8 Step 3: 強制 5 位數字梯次代碼，避免同梯次資料被打散
+    if (!/^\d{5}$/.test(rotationName)) {
+      alert('Rotation 名稱請輸入 5 位數字梯次代碼，例：11501');
+      document.getElementById('rotationName').focus();
+      document.getElementById('rotationName').select();
       return;
     }
     rotationPhase = document.querySelector('#rotationPhase .chip.active').dataset.phase;

@@ -596,7 +596,52 @@ Step 3 寫新 view 時用 `WHERE rotation_title_normalized IS NOT NULL` 過濾�
 
 **v1.7 既有 5 個 view 刻意不動**：admin Tab 1 的 `sessions_count` 預期會變大（從 2~3 → 每位學生實際答過的 rotation 次數），這是 feature not bug ─ session 粒度對齊「學習單元」更貼近教學語意。
 
-#### 4️⃣ exam_sessions INSERT 採 fail-open
+#### 4️⃣ Step 3 — Rotation cohort 分析三支 view + cohort_code
+
+**為何拆 3 支不包成 1 支**：
+- `v_rotation_cohort_overview`（rotation 一 row）= admin 端做總覽表 + 排序
+- `v_rotation_pre_post_pair`（學生×rotation 一 row）= 同學生跨梯次成長、個別前後測對比
+- `v_rotation_topic_stats`（rotation × phase × category）= 弱項主題定位
+
+拆 3 支邏輯各自單純、admin 端 section 可獨立 query、未來改一支不影響另兩支。一張大 view 把 3 個 group 維度塞同層級會難讀也難維護。
+
+**RLS 必加 `WITH (security_invoker = true)`**（PG 15+ flag）：
+
+PG 預設 view 用 view owner（在 Supabase = `postgres` superuser）權限跑底層查詢，會 bypass 所有 RLS。如果 view 給學生 query 用，會洩漏全班資料。`security_invoker = true` 讓 view 用 caller 權限跑，`attempts` / `students` 的 RLS 才會生效（學生只看自己、老師看全部）。
+
+v1.7 既有 5 個 view 沒設這個 flag（admin 端只給老師用所以 bypass 不洩漏，但本身是隱性風險）。Step 3 view 設計時就考慮未來可能給學生端用，直接補上去。
+
+⚠️ 改回 `security_invoker = false`（預設）會破壞 RLS，未經評估不要動。
+
+**為何用 view 不用 materialized view**：
+- 資料量極小：7 學員 × 月 2~3 rotation × 2 phase ≈ 月 ~28 row exam_sessions、~1500 attempts
+- query 即時算夠快、不需 refresh 機制
+- materialized view 一旦資料有更新延遲，老師上 dashboard 會看到舊資料的疑慮成本 > 算力節省
+
+**cohort_code 抽取規則**：`substring(rotation_title_normalized from '\d{3,}')` 取第一段 ≥3 位連續數字。設計動機：
+- `11501` / `11502` 是台灣民國年+月份習慣編碼，本來就是純數字
+- 抽出來給 admin 端 `ORDER BY cohort_code` 用，non-numeric rotation（例 `rotation a`）抽出 NULL 自然排到尾
+- 不在學生端輸入時 parse，是因為 normalize 規則想留在 DB 層集中管（client 不重複實作）
+
+**過濾範圍**：
+```sql
+WHERE rotation_title_normalized IS NOT NULL
+  AND phase IN ('pretest', 'posttest')
+  -- v_rotation_topic_stats 另加 AND category IS NOT NULL
+```
+
+排除三類資料：
+- v1.7 之前的舊共享 session（`rotation_title_normalized IS NULL`）
+- `phase = 'practice'`（自由練習不算梯次評估）
+- `category IS NULL` 的 attempts（只影響 topic_stats）
+
+**配套：學生端 5 位數字限制**：
+
+`obstetrica.html → index.html` 第 2435 行 rotation input 加 `pattern="\d{5}"` + `maxlength="5"` + `inputmode="numeric"`；`startQuiz()` 內加 `/^\d{5}$/.test()` JS 檢查（HTML pattern 不可靠，JS 才會真的擋）。
+
+⚠️ 副作用：之前學生用過的非數字 rotation（例 `TEST_v18_Step2`）的舊 attempts 還在 DB，但 `cohort_code` 是 NULL，會在 view 內排到最後/被 filter 排除。歷史資料不會壞，但新規定下不能再產生非數字 rotation。
+
+#### 5️⃣ exam_sessions INSERT 採 fail-open
 
 INSERT 失敗時不擋學生答題，退回 v1.7 sharedMap 行為：
 
@@ -627,6 +672,7 @@ const session_id = record.session_id || sessionMap[phase];
 |---|---|---|
 | v1.0 | 2026-05 | 初版：完整 SOP，含 12 個 Part |
 | v1.1 | 2026-05 | 加 Part 13 版本設計決策（v1.8 rotation 落地） |
+| v1.2 | 2026-05 | Part 13 補 v1.8 Step 3（3 支 rotation view + cohort_code + 學生端 5 位數字限制） |
 
 ---
 
