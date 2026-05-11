@@ -2591,8 +2591,14 @@ main {
       <input type="text" class="form-input" id="profName" placeholder="例：王小明"/>
     </div>
     <div class="form-group">
-      <label class="form-label">年資</label>
-      <input type="text" class="form-input" id="profYear" placeholder="例：R1 / R2 / PGY1"/>
+      <label class="form-label">年級</label>
+      <select class="form-input" id="profYear">
+        <option value="" disabled selected>請選擇年級</option>
+        <option value="C1">C1</option>
+        <option value="C2">C2</option>
+        <option value="PGY1">PGY1</option>
+        <option value="PGY2">PGY2</option>
+      </select>
     </div>
     <button class="btn btn-primary btn-block" onclick="saveProfile()">儲存</button>
   </div>
@@ -2996,6 +3002,12 @@ function showLoginModal() {
 }
 
 function showProfileModal() {
+  // 預填現有 user 資料；若 year 不在下拉選項內，select 會 fallback 到 placeholder
+  if (user) {
+    document.getElementById('profName').value = user.name || '';
+    const allowedYears = ['C1', 'C2', 'PGY1', 'PGY2'];
+    document.getElementById('profYear').value = allowedYears.includes(user.year) ? user.year : '';
+  }
   document.getElementById('profileModal').classList.add('active');
   setTimeout(() => document.getElementById('profName').focus(), 100);
 }
@@ -3018,8 +3030,9 @@ async function doLogin() {
 
 async function saveProfile() {
   const name = document.getElementById('profName').value.trim();
-  const year = document.getElementById('profYear').value.trim();
-  if (!name) { alert('請輸入姓名'); return; }
+  const year = document.getElementById('profYear').value;
+  if (!name) { alert('請輸入姓名'); document.getElementById('profName').focus(); return; }
+  if (!year) { alert('請選擇年級'); document.getElementById('profYear').focus(); return; }
   const { error } = await supa.from('students').update({ name, year }).eq('id', user.id);
   if (error) { alert('儲存失敗：' + error.message); return; }
   user.name = name; user.year = year; saveUser();
@@ -3041,9 +3054,13 @@ function renderUserBar() {
   const adminLink = user.role === 'teacher'
     ? '<a class="btn-text" href="admin/" style="margin-right:8px;">📊 老師後台</a>'
     : '';
+  const editBtn = user.role === 'teacher'
+    ? ''
+    : '<button class="btn-text" onclick="showProfileModal()" title="編輯姓名 / 年級" style="margin-right:8px;">✏️ 編輯</button>';
   document.getElementById('userBar').innerHTML = `
     <div class="user-info">${esc(tag)}：<span class="user-name">${esc(user.name)}</span></div>
     <span class="user-id-badge">${esc(user.email)}</span>
+    ${editBtn}
     ${adminLink}
     <button class="btn-text" onclick="logout()">登出</button>
   `;

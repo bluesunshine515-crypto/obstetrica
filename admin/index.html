@@ -453,6 +453,7 @@ let activeTab = 'overview';
 let selectedStudentId = null; // 跨 tab 共享
 const cache = {
   overview: null,        // v_student_overview
+  latestRotation: null,  // v_student_latest_rotation → 用 student_id 索引
   classTopic: null,      // v_class_topic_stats
   hotspots: null,        // v_misconception_hotspots
   questionStats: null,   // v_question_stats
@@ -625,12 +626,39 @@ async function fetchOverview() {
   return cache.overview;
 }
 
+// v1.8 Step 4: 每位學生最近一筆 rotation attempt 對應的 cohort_code
+async function fetchLatestRotation() {
+  if (cache.latestRotation) return cache.latestRotation;
+  const { data, error } = await supa
+    .from('v_student_latest_rotation')
+    .select('student_id, cohort_code, rotation_title_display, phase, last_attempt_at');
+  if (error) {
+    // fail-open：view 還沒部署時 admin Tab 1 仍能顯示，只是 cohort 欄會空白
+    console.warn('[admin] v_student_latest_rotation fetch failed, cohort column will be blank:', error);
+    cache.latestRotation = {};
+    return cache.latestRotation;
+  }
+  // 轉成 student_id → row 的 map
+  const map = {};
+  (data || []).forEach(r => { map[r.student_id] = r; });
+  cache.latestRotation = map;
+  return cache.latestRotation;
+}
+
 async function renderOverview() {
   const panel = document.getElementById('tab-overview');
   panel.innerHTML = '<div class="empty">載入中…</div>';
   let rows;
   try {
     rows = await fetchOverview();
+    // v1.8 Step 4: fetch latest rotation 並 merge cohort_code 進 overview row
+    const latestMap = await fetchLatestRotation();
+    rows = rows.map(r => ({
+      ...r,
+      cohort_code: latestMap[r.student_id]?.cohort_code || null,
+      latest_rotation_display: latestMap[r.student_id]?.rotation_title_display || null,
+    }));
+    cache.overview = rows;   // 寫回 cache 讓 sort/filter 看到 merged 欄位
   } catch (e) {
     panel.innerHTML = `<div class="empty">載入失敗：${esc(e.message || String(e))}</div>`;
     return;
@@ -681,10 +709,10 @@ async function renderOverview() {
         <label>年級 Year</label>
         <select id="overviewYearFilter">
           <option value="">— 全部 —</option>
-          <option value="R1">R1</option>
-          <option value="R2">R2</option>
-          <option value="R3">R3</option>
-          <option value="R4">R4</option>
+          <option value="C1">C1</option>
+          <option value="C2">C2</option>
+          <option value="PGY1">PGY1</option>
+          <option value="PGY2">PGY2</option>
         </select>
       </div>
       <button class="btn btn-secondary" id="overviewReload">🔄 重新載入</button>
@@ -705,6 +733,7 @@ async function renderOverview() {
   });
   document.getElementById('overviewReload').addEventListener('click', async () => {
     cache.overview = null;
+    cache.latestRotation = null;
     await renderOverview();
   });
 
@@ -745,6 +774,7 @@ function renderOverviewTable() {
   const cols = [
     { key: 'display_name',   label: '姓名 Name' },
     { key: 'year',           label: '年級 Year' },
+    { key: 'cohort_code',    label: '最近梯次 Cohort' },
     { key: 'total_attempts', label: '答題數 Attempts' },
     { key: 'accuracy_rate',  label: '正確率 Accuracy' },
     { key: 'sessions_count', label: 'Sessions' },
@@ -770,6 +800,7 @@ function renderOverviewTable() {
             <tr data-student-id="${esc(r.student_id)}">
               <td>${esc(r.display_name || r.email || '?')}</td>
               <td>${esc(r.year || '—')}</td>
+              <td>${esc(r.cohort_code || '—')}</td>
               <td>${(Number(r.total_attempts) || 0).toLocaleString()}</td>
               <td>
                 <div class="acc-cell">
@@ -794,7 +825,7 @@ function renderOverviewTable() {
         overviewSort.dir = overviewSort.dir === 'asc' ? 'desc' : 'asc';
       } else {
         overviewSort.key = k;
-        overviewSort.dir = (k === 'display_name' || k === 'year') ? 'asc' : 'desc';
+        overviewSort.dir = (k === 'display_name' || k === 'year' || k === 'cohort_code') ? 'asc' : 'desc';
       }
       renderOverviewTable();
     });

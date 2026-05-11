@@ -641,7 +641,47 @@ WHERE rotation_title_normalized IS NOT NULL
 
 ⚠️ 副作用：之前學生用過的非數字 rotation（例 `TEST_v18_Step2`）的舊 attempts 還在 DB，但 `cohort_code` 是 NULL，會在 view 內排到最後/被 filter 排除。歷史資料不會壞，但新規定下不能再產生非數字 rotation。
 
-#### 5️⃣ exam_sessions INSERT 採 fail-open
+#### 5️⃣ Step 4 — admin Tab 1 整合「最近梯次」+ 學生年級下拉
+
+**目標**：老師打開「班級總覽」直接看到每位學生最近一梯（11505 等），不用切 Tab；學生年級從自由 text 改成 4 選 1（C1/C2/PGY1/PGY2），避免資料變髒。
+
+**新建 view `v_student_latest_rotation`（Step 4 SQL）**：
+```sql
+SELECT DISTINCT ON (a.student_id)
+  a.student_id, s.rotation_title_normalized AS rotation_key,
+  substring(s.rotation_title_normalized FROM '\d{3,}') AS cohort_code,
+  ...
+FROM attempts a JOIN exam_sessions s ON s.id = a.session_id
+WHERE rotation_title_normalized IS NOT NULL AND phase IN ('pretest','posttest')
+ORDER BY a.student_id, a.attempted_at DESC;
+```
+
+**為何用 view 而非前端 query `attempts`**：
+- 前端要 group_by + max(attempted_at) Supabase JS 不好寫
+- 資料量會隨時間長（每多 1 梯就多 N×K row），與其前端 fetch 全量算，不如 DB DISTINCT ON
+- view 加 `security_invoker = true` 後 RLS 自動繼承
+
+**為何不直接擴 `v_student_overview` 加 cohort_code 欄**：
+- v1.7 既有 view 不動原則
+- v_student_overview 不該有 rotation 維度（單一視角原則：一個 view 一件事）
+- admin 前端拿到兩個 view 後 merge 是 5 行 JS，零成本
+
+**fail-open 行為**：fetch `v_student_latest_rotation` 失敗時 Tab 1 仍渲染、cohort 欄顯示 `—`。理由：cohort 欄是 nice-to-have，不該因為一個 view 失敗就擋老師看全班總覽。
+
+**學生年級 4 選 1 限制**：
+
+`index.html` profile modal 從 `<input>` 改 `<select>`：C1 / C2 / PGY1 / PGY2。`saveProfile()` 加 `!year` 擋空值。`showProfileModal()` 預填現有 user.year，若舊 user.year 不在 4 個內（例：舊 'R1'），select 自動 fallback 到 placeholder，視覺上等於強制重選。
+
+⚠️ 既有學生年級若是非 4 選 1 之外的值（'R1' / 'PGY3' 等）：
+- 老師端 Tab 1 「年級」欄仍會顯示原值（不會自動 migrate）
+- 學生下次點「✏️ 編輯」會被迫重選
+- 想批次清資料：SQL `UPDATE students SET year = '...' WHERE year NOT IN ('C1','C2','PGY1','PGY2')`，看清完原值再決定
+
+**學生右上角加「✏️ 編輯」按鈕**：
+
+讓學生可以自己改名字 / 年級。老師端不加（老師沒 year 欄位需求）。
+
+#### 6️⃣ exam_sessions INSERT 採 fail-open
 
 INSERT 失敗時不擋學生答題，退回 v1.7 sharedMap 行為：
 
@@ -673,6 +713,7 @@ const session_id = record.session_id || sessionMap[phase];
 | v1.0 | 2026-05 | 初版：完整 SOP，含 12 個 Part |
 | v1.1 | 2026-05 | 加 Part 13 版本設計決策（v1.8 rotation 落地） |
 | v1.2 | 2026-05 | Part 13 補 v1.8 Step 3（3 支 rotation view + cohort_code + 學生端 5 位數字限制） |
+| v1.3 | 2026-05 | Part 13 補 v1.8 Step 4（v_student_latest_rotation + admin Tab 1 cohort 欄 + 學生年級下拉 C1-PGY2） |
 
 ---
 
