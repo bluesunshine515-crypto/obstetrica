@@ -2585,7 +2585,7 @@ main {
 <div class="modal-backdrop" id="profileModal">
   <div class="modal">
     <div class="modal-title">完成個人資料</div>
-    <p class="modal-subtitle">請輸入你的姓名與年資（一次設定，之後不再詢問）</p>
+    <p class="modal-subtitle">請輸入姓名、年級、當前梯次（之後可從右上角「✏️ 編輯」修改）</p>
     <div class="form-group">
       <label class="form-label">姓名</label>
       <input type="text" class="form-input" id="profName" placeholder="例：王小明"/>
@@ -2599,6 +2599,11 @@ main {
         <option value="PGY1">PGY1</option>
         <option value="PGY2">PGY2</option>
       </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">當前梯次</label>
+      <input type="text" class="form-input" id="profCohort" placeholder="例：11506" pattern="\d{5}" inputmode="numeric" maxlength="5" title="請輸入 5 位數字梯次代碼"/>
+      <div class="form-help" style="font-size:12px;color:var(--ink-soft);margin-top:4px;">5 位數字（民國年+月份）。跨梯次時請點「✏️ 編輯」更新。</div>
     </div>
     <button class="btn btn-primary btn-block" onclick="saveProfile()">儲存</button>
   </div>
@@ -2976,12 +2981,17 @@ async function init() {
     email: session.user.email,
     name: sr.name || '',
     year: sr.year || '',
+    cohort_code: sr.cohort_code || '',
     role: sr.role || 'student',
     joinedAt: sr.created_at
   };
   saveUser();
   await loadAnnotations(user.id);
-  if (!user.name) { showProfileModal(); return; }
+  // v1.8 Step 5: 學生必須有 name + year + cohort_code 才能跳過 modal；老師只看 name
+  const needsProfile = user.role === 'teacher'
+    ? !user.name
+    : (!user.name || !user.year || !user.cohort_code);
+  if (needsProfile) { showProfileModal(); return; }
   renderUserBar();
   renderDashboard();
 }
@@ -3002,11 +3012,12 @@ function showLoginModal() {
 }
 
 function showProfileModal() {
-  // 預填現有 user 資料；若 year 不在下拉選項內，select 會 fallback 到 placeholder
+  // 預填現有 user 資料；若 year 不在下拉選項內 select 會 fallback 到 placeholder
   if (user) {
     document.getElementById('profName').value = user.name || '';
     const allowedYears = ['C1', 'C2', 'PGY1', 'PGY2'];
     document.getElementById('profYear').value = allowedYears.includes(user.year) ? user.year : '';
+    document.getElementById('profCohort').value = user.cohort_code || '';
   }
   document.getElementById('profileModal').classList.add('active');
   setTimeout(() => document.getElementById('profName').focus(), 100);
@@ -3029,13 +3040,24 @@ async function doLogin() {
 }
 
 async function saveProfile() {
-  const name = document.getElementById('profName').value.trim();
-  const year = document.getElementById('profYear').value;
+  const name   = document.getElementById('profName').value.trim();
+  const year   = document.getElementById('profYear').value;
+  const cohort = document.getElementById('profCohort').value.trim();
+  const isTeacher = user.role === 'teacher';
   if (!name) { alert('請輸入姓名'); document.getElementById('profName').focus(); return; }
-  if (!year) { alert('請選擇年級'); document.getElementById('profYear').focus(); return; }
-  const { error } = await supa.from('students').update({ name, year }).eq('id', user.id);
+  // 老師可以略過年級 / 梯次；學生必須填齊
+  if (!isTeacher) {
+    if (!year)   { alert('請選擇年級'); document.getElementById('profYear').focus(); return; }
+    if (!cohort) { alert('請輸入當前梯次（5 位數字，例：11506）'); document.getElementById('profCohort').focus(); return; }
+    if (!/^\d{5}$/.test(cohort)) { alert('梯次代碼必須是 5 位數字，例：11506'); document.getElementById('profCohort').focus(); document.getElementById('profCohort').select(); return; }
+  }
+  const updateData = { name, year };
+  if (!isTeacher) updateData.cohort_code = cohort;   // 老師不寫 cohort
+  const { error } = await supa.from('students').update(updateData).eq('id', user.id);
   if (error) { alert('儲存失敗：' + error.message); return; }
-  user.name = name; user.year = year; saveUser();
+  user.name = name; user.year = year;
+  if (!isTeacher) user.cohort_code = cohort;
+  saveUser();
   document.getElementById('profileModal').classList.remove('active');
   renderUserBar();
   renderDashboard();
@@ -3056,7 +3078,7 @@ function renderUserBar() {
     : '';
   const editBtn = user.role === 'teacher'
     ? ''
-    : '<button class="btn-text" onclick="showProfileModal()" title="編輯姓名 / 年級" style="margin-right:8px;">✏️ 編輯</button>';
+    : '<button class="btn-text" onclick="showProfileModal()" title="編輯姓名 / 年級 / 梯次" style="margin-right:8px;">✏️ 編輯</button>';
   document.getElementById('userBar').innerHTML = `
     <div class="user-info">${esc(tag)}：<span class="user-name">${esc(user.name)}</span></div>
     <span class="user-id-badge">${esc(user.email)}</span>
@@ -3157,6 +3179,11 @@ function setupFilterPanel() {
   document.getElementById('filterSubtitle').textContent = titles[currentMode].subtitle;
 
   document.getElementById('rotationSetup').style.display = currentMode === 'rotation' ? 'block' : 'none';
+  // v1.8 Step 5: rotation 模式時預填 user.cohort_code（學生可改 → 跨梯補測用）
+  if (currentMode === 'rotation') {
+    const rn = document.getElementById('rotationName');
+    if (rn && !rn.value && user && user.cohort_code) rn.value = user.cohort_code;
+  }
   document.getElementById('filterTimeRow').style.display = currentMode === 'exam' ? 'grid' : 'none';
   document.getElementById('filterCountRow').style.display = currentMode === 'rotation' ? 'none' : 'grid';
 

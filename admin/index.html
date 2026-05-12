@@ -626,21 +626,22 @@ async function fetchOverview() {
   return cache.overview;
 }
 
-// v1.8 Step 4: 每位學生最近一筆 rotation attempt 對應的 cohort_code
+// v1.8 Step 5: cohort 來源改為 students.cohort_code（學生宣告）
+// 比 Step 4 的 v_student_latest_rotation 即時 — 學生 login 設了就有值，不用等他答題
 async function fetchLatestRotation() {
   if (cache.latestRotation) return cache.latestRotation;
   const { data, error } = await supa
-    .from('v_student_latest_rotation')
-    .select('student_id, cohort_code, rotation_title_display, phase, last_attempt_at');
+    .from('students')
+    .select('id, cohort_code');
   if (error) {
-    // fail-open：view 還沒部署時 admin Tab 1 仍能顯示，只是 cohort 欄會空白
-    console.warn('[admin] v_student_latest_rotation fetch failed, cohort column will be blank:', error);
+    // fail-open：fetch 失敗時 Tab 1 仍能顯示，cohort 欄會 —
+    console.warn('[admin] students.cohort_code fetch failed, cohort column will be blank:', error);
     cache.latestRotation = {};
     return cache.latestRotation;
   }
-  // 轉成 student_id → row 的 map
+  // 轉成 student_id → { cohort_code } 的 map
   const map = {};
-  (data || []).forEach(r => { map[r.student_id] = r; });
+  (data || []).forEach(r => { map[r.id] = { cohort_code: r.cohort_code }; });
   cache.latestRotation = map;
   return cache.latestRotation;
 }
@@ -651,12 +652,11 @@ async function renderOverview() {
   let rows;
   try {
     rows = await fetchOverview();
-    // v1.8 Step 4: fetch latest rotation 並 merge cohort_code 進 overview row
+    // v1.8 Step 5: merge students.cohort_code 進 overview row
     const latestMap = await fetchLatestRotation();
     rows = rows.map(r => ({
       ...r,
       cohort_code: latestMap[r.student_id]?.cohort_code || null,
-      latest_rotation_display: latestMap[r.student_id]?.rotation_title_display || null,
     }));
     cache.overview = rows;   // 寫回 cache 讓 sort/filter 看到 merged 欄位
   } catch (e) {

@@ -681,7 +681,48 @@ ORDER BY a.student_id, a.attempted_at DESC;
 
 讓學生可以自己改名字 / 年級。老師端不加（老師沒 year 欄位需求）。
 
-#### 6️⃣ exam_sessions INSERT 採 fail-open
+#### 6️⃣ Step 5 — students.cohort_code「學生宣告」當前梯次
+
+**動機**：Step 4 的 `v_student_latest_rotation` 是從 attempts 反推學生最近一梯，問題：學生新開帳號還沒答題 → admin Tab 1「最近梯次」是空的。需要學生在 login 時直接宣告「我這梯是 X」，admin 就能在學生答題前先看到分組。
+
+**架構選擇：兩個 source of truth 共存**：
+| 欄位 | 來源 | 更新時機 | 用途 |
+|---|---|---|---|
+| `students.cohort_code` | 學生自己 modal 填 | login 第一次 + 「✏️ 編輯」隨時 | admin Tab 1 顯示、startQuiz rotation input 預填 |
+| `v_student_latest_rotation.cohort_code` | 從 attempts 反推 | 答題時自動 | 「實際做了什麼梯次」audit 用，未來可比對「宣告 vs 實際」 |
+
+短期 admin Tab 1 只用第一個（學生宣告）。第二個 view 保留不刪。
+
+**DB schema**：
+```sql
+ALTER TABLE students ADD COLUMN cohort_code text;
+ALTER TABLE students ADD CONSTRAINT students_cohort_format
+  CHECK (cohort_code IS NULL OR cohort_code ~ '^\d{5}$');
+```
+CHECK 確保格式一致（5 位數字 或 NULL）。新欄位 nullable 為了向後相容（既有學生不會因 NOT NULL 卡）。
+
+**前端流程改動**：
+
+`index.html`：
+- profile modal 加第 3 欄「當前梯次」（pattern `\d{5}`）
+- `bootSession()` modal trigger 條件從 `!name` 擴成 `!name || !year || !cohort_code`（**學生**），老師仍只看 `!name`
+- `saveProfile()` 學生強制驗 5 位數字格式；老師可略過 year/cohort
+- `startQuiz()` rotation 模式時 rotation input 預填 `user.cohort_code`（學生可改 → 跨梯補測用）
+
+⚠️ 既有學生升級後第一次 login 會被擋著補梯次（這是 feature，讓資料補齊）。
+
+**admin Tab 1 改動**：
+
+`admin/index.html` `fetchLatestRotation()` 從 `v_student_latest_rotation` view 改抓 `students.cohort_code`：
+- 簡單：只要 `select('id, cohort_code')`，一個 query
+- 即時：學生 login 設了立刻看得到，不用等他答題
+- 老師看自己那 row：cohort_code = NULL（因老師不填）→ 顯示 `—`
+
+**未來可做的擴充**（不在 Step 5 範圍）：
+- admin Tab 6 做「宣告 vs 實際」對比：列出 `students.cohort_code != v_student_latest_rotation.cohort_code` 的學生
+- 跨梯統計：用 `students.cohort_code` 把學員 group 起來看
+
+#### 7️⃣ exam_sessions INSERT 採 fail-open
 
 INSERT 失敗時不擋學生答題，退回 v1.7 sharedMap 行為：
 
@@ -714,6 +755,7 @@ const session_id = record.session_id || sessionMap[phase];
 | v1.1 | 2026-05 | 加 Part 13 版本設計決策（v1.8 rotation 落地） |
 | v1.2 | 2026-05 | Part 13 補 v1.8 Step 3（3 支 rotation view + cohort_code + 學生端 5 位數字限制） |
 | v1.3 | 2026-05 | Part 13 補 v1.8 Step 4（v_student_latest_rotation + admin Tab 1 cohort 欄 + 學生年級下拉 C1-PGY2） |
+| v1.4 | 2026-05 | Part 13 補 v1.8 Step 5（students.cohort_code + profile modal 3 欄 + startQuiz 預填 + admin 改抓宣告值） |
 
 ---
 
