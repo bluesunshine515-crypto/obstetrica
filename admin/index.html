@@ -158,6 +158,13 @@ table.sortable th.sorted-asc::after  { content: ' ↑'; color: var(--gold); }
 table.sortable th.sorted-desc::after { content: ' ↓'; color: var(--gold); }
 table.clickable-rows tbody tr { cursor: pointer; }
 table.clickable-rows tbody tr:hover { background: #f5f0e2; }
+/* v1.8 Step 6: row-selected for Tab 6 rotation list */
+table.clickable-rows tbody tr.row-selected,
+table.clickable-rows tbody tr.row-selected:hover { background: #fce8a3; }
+/* v1.8 Step 6: delta 進步幅度色彩（給文字 cell 用） */
+td.acc-high { color: var(--green); }
+td.acc-mid  { color: var(--ink); }
+td.acc-low  { color: var(--red); }
 
 /* ===== Tab placeholder (for tabs not yet implemented) ===== */
 .tab-stub { padding: 80px 20px; text-align: center; color: var(--ink-mute); font-style: italic; font-size: 15px; }
@@ -460,11 +467,19 @@ const cache = {
   studentTopic: {},      // keyed by studentId → v_student_topic_stats rows
   studentWrong: {},      // keyed by studentId → wrong attempts rows
   studentSessions: {},   // keyed by studentId → grouped session rows
+  // v1.8 Step 6: Rotation 分析 Tab
+  rotationOverview: null,// v_rotation_cohort_overview
+  rotationPair: {},      // keyed by rotation_key → v_rotation_pre_post_pair rows
+  rotationTopic: {},     // keyed by rotation_key → v_rotation_topic_stats rows
 };
 const charts = {};
 // Tab 1 state
 let overviewSort = { key: 'last_activity', dir: 'desc' };
 let overviewYearFilter = '';
+// Tab 6 state（v1.8 Step 6）
+let selectedRotationKey = null;
+let rotationSearch = '';
+let rotationListSort = { key: 'cohort_code', dir: 'asc' };
 
 // ===== UTILITIES =====
 function esc(s) {
@@ -586,12 +601,14 @@ function renderShell() {
       <button class="tab-btn" data-tab="wrong">❌ 錯題集 <span class="en">Wrong</span></button>
       <button class="tab-btn" data-tab="weakness">🎯 弱項分析 <span class="en">Weakness</span></button>
       <button class="tab-btn" data-tab="misconception">🔍 誘答分析 <span class="en">Misconception</span></button>
+      <button class="tab-btn" data-tab="rotation">🔄 Rotation 分析 <span class="en">Rotation</span></button>
     </nav>
     <div class="tab-panel" id="tab-overview"></div>
     <div class="tab-panel" id="tab-student"><div class="tab-stub">敬請期待 · Tab 2 將實作學生詳情</div></div>
     <div class="tab-panel" id="tab-wrong"><div class="tab-stub">敬請期待 · Tab 3 將實作錯題集</div></div>
     <div class="tab-panel" id="tab-weakness"><div class="tab-stub">敬請期待 · Tab 4 將實作弱項分析</div></div>
     <div class="tab-panel" id="tab-misconception"><div class="tab-stub">敬請期待 · Tab 5 將實作誘答分析</div></div>
+    <div class="tab-panel" id="tab-rotation"></div>
   `;
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
@@ -613,6 +630,7 @@ function switchTab(name, opts = {}) {
   else if (name === 'wrong') renderWrongList();
   else if (name === 'weakness') renderWeakness();
   else if (name === 'misconception') renderMisconceptions();
+  else if (name === 'rotation') renderRotationTab();
 }
 
 // ===== TAB 1: OVERVIEW =====
@@ -1862,6 +1880,373 @@ function renderMisconceptionGrid() {
         }
       }
     });
+  });
+}
+
+// ===== TAB 6: ROTATION ANALYSIS (v1.8 Step 6) =====
+async function fetchRotationOverview() {
+  if (cache.rotationOverview) return cache.rotationOverview;
+  const { data, error } = await supa
+    .from('v_rotation_cohort_overview')
+    .select('*');
+  if (error) throw error;
+  cache.rotationOverview = data || [];
+  return cache.rotationOverview;
+}
+
+async function fetchRotationPair(rotationKey) {
+  if (cache.rotationPair[rotationKey]) return cache.rotationPair[rotationKey];
+  const { data, error } = await supa
+    .from('v_rotation_pre_post_pair')
+    .select('*')
+    .eq('rotation_key', rotationKey);
+  if (error) throw error;
+  cache.rotationPair[rotationKey] = data || [];
+  return cache.rotationPair[rotationKey];
+}
+
+async function fetchRotationTopic(rotationKey) {
+  if (cache.rotationTopic[rotationKey]) return cache.rotationTopic[rotationKey];
+  const { data, error } = await supa
+    .from('v_rotation_topic_stats')
+    .select('*')
+    .eq('rotation_key', rotationKey);
+  if (error) throw error;
+  cache.rotationTopic[rotationKey] = data || [];
+  return cache.rotationTopic[rotationKey];
+}
+
+async function renderRotationTab() {
+  const panel = document.getElementById('tab-rotation');
+  panel.innerHTML = `
+    <div class="ctrl-bar">
+      <div class="ctrl-group">
+        <label>搜尋梯次</label>
+        <input type="text" id="rotationSearchInput" placeholder="例：11506" inputmode="numeric" maxlength="5" value="${esc(rotationSearch)}" style="width:120px;"/>
+      </div>
+      <button class="btn btn-secondary" id="rotationReload">🔄 重新載入</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">梯次清單 Rotation List</div>
+      <div class="card-sub">點擊任一列展開該梯次的學員前後測對比與主題弱項</div>
+      <div id="rotationListWrap"><div class="empty">載入中…</div></div>
+    </div>
+
+    <div id="rotationDetailWrap"></div>
+  `;
+
+  // Wire controls
+  document.getElementById('rotationSearchInput').addEventListener('input', e => {
+    rotationSearch = e.target.value.trim();
+    renderRotationList();
+  });
+  document.getElementById('rotationReload').addEventListener('click', async () => {
+    cache.rotationOverview = null;
+    cache.rotationPair = {};
+    cache.rotationTopic = {};
+    selectedRotationKey = null;
+    await renderRotationTab();
+  });
+
+  // Initial fetch + render
+  try {
+    await fetchRotationOverview();
+  } catch (e) {
+    document.getElementById('rotationListWrap').innerHTML =
+      `<div class="empty">載入失敗：${esc(e.message || String(e))}</div>`;
+    return;
+  }
+  renderRotationList();
+  // 之前已選的梯次 — 重新進 Tab 時自動展開
+  if (selectedRotationKey) await renderRotationDetail(selectedRotationKey);
+}
+
+function renderRotationList() {
+  const wrap = document.getElementById('rotationListWrap');
+  if (!wrap) return;
+  const all = cache.rotationOverview || [];
+  // 過濾：搜尋字串對 cohort_code / rotation_title_display / rotation_key 模糊比對
+  const q = rotationSearch.toLowerCase();
+  let rows = q
+    ? all.filter(r =>
+        String(r.cohort_code || '').toLowerCase().includes(q) ||
+        String(r.rotation_title_display || '').toLowerCase().includes(q) ||
+        String(r.rotation_key || '').toLowerCase().includes(q)
+      )
+    : all.slice();
+
+  // Sort
+  const { key, dir } = rotationListSort;
+  rows.sort((a, b) => {
+    let av = a[key], bv = b[key];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (key === 'first_attempt_at' || key === 'last_attempt_at') {
+      av = new Date(av).getTime() || 0;
+      bv = new Date(bv).getTime() || 0;
+    }
+    if (typeof av === 'string' && typeof bv === 'string') {
+      return dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+    }
+    av = Number(av) || 0; bv = Number(bv) || 0;
+    return dir === 'asc' ? av - bv : bv - av;
+  });
+
+  if (rows.length === 0) {
+    wrap.innerHTML = all.length === 0
+      ? '<div class="empty">尚無 rotation 資料 — 等學生跑過 rotation 模式 quiz 才會出現。</div>'
+      : '<div class="empty">沒有符合搜尋條件的梯次。</div>';
+    return;
+  }
+
+  const cols = [
+    { key: 'cohort_code',            label: '梯次 Cohort' },
+    { key: 'rotation_title_display', label: '原始名稱 Title' },
+    { key: 'student_count',          label: '學員 Students' },
+    { key: 'pretest_session_count',  label: '前測場次 Pre' },
+    { key: 'posttest_session_count', label: '後測場次 Post' },
+    { key: 'total_attempts',         label: '答題數 Attempts' },
+    { key: 'overall_accuracy',       label: '整體正確率 Acc' },
+    { key: 'avg_time_spent_sec',     label: '平均秒/題 Avg s/Q' },
+    { key: 'last_attempt_at',        label: '最近答題 Last' },
+  ];
+
+  wrap.innerHTML = `
+    <table class="sortable clickable-rows">
+      <thead><tr>
+        ${cols.map(c => {
+          const sortCls = rotationListSort.key === c.key ? ('sorted-' + rotationListSort.dir) : '';
+          return `<th data-key="${c.key}" class="${sortCls}">${esc(c.label)}</th>`;
+        }).join('')}
+      </tr></thead>
+      <tbody>
+        ${rows.map(r => {
+          const acc = toPct(r.overall_accuracy);
+          const accCls = accClass(acc);
+          const avgT = (r.avg_time_spent_sec == null || isNaN(Number(r.avg_time_spent_sec)))
+            ? '—' : Math.round(Number(r.avg_time_spent_sec)) + ' s';
+          const selectedCls = selectedRotationKey === r.rotation_key ? 'row-selected' : '';
+          return `
+            <tr data-rotation-key="${esc(r.rotation_key)}" class="${selectedCls}">
+              <td><b>${esc(r.cohort_code || '—')}</b></td>
+              <td>${esc(r.rotation_title_display || '—')}</td>
+              <td>${Number(r.student_count) || 0}</td>
+              <td>${Number(r.pretest_session_count) || 0}</td>
+              <td>${Number(r.posttest_session_count) || 0}</td>
+              <td>${(Number(r.total_attempts) || 0).toLocaleString()}</td>
+              <td>
+                <div class="acc-cell">
+                  <div class="acc-bar-wrap"><div class="acc-bar-fill ${accCls}" style="width:${acc}%"></div></div>
+                  <div class="acc-text">${acc}%</div>
+                </div>
+              </td>
+              <td>${avgT}</td>
+              <td>${relativeTime(r.last_attempt_at)}</td>
+            </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+
+  // Sort 標題點擊
+  wrap.querySelectorAll('th[data-key]').forEach(th => {
+    th.addEventListener('click', () => {
+      const k = th.dataset.key;
+      if (rotationListSort.key === k) {
+        rotationListSort.dir = rotationListSort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        rotationListSort.key = k;
+        rotationListSort.dir = (k === 'cohort_code' || k === 'rotation_title_display') ? 'asc' : 'desc';
+      }
+      renderRotationList();
+    });
+  });
+  // 點 row → 展開細節
+  wrap.querySelectorAll('tr[data-rotation-key]').forEach(tr => {
+    tr.addEventListener('click', async () => {
+      selectedRotationKey = tr.dataset.rotationKey;
+      renderRotationList();    // 重新渲染讓 row-selected 樣式更新
+      await renderRotationDetail(selectedRotationKey);
+      // 視覺反饋：自動滾到 detail 區
+      const detail = document.getElementById('rotationDetailWrap');
+      if (detail) detail.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+}
+
+async function renderRotationDetail(rotationKey) {
+  const wrap = document.getElementById('rotationDetailWrap');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="card"><div class="empty">載入中…</div></div>';
+
+  let pairRows, topicRows;
+  try {
+    [pairRows, topicRows] = await Promise.all([
+      fetchRotationPair(rotationKey),
+      fetchRotationTopic(rotationKey),
+    ]);
+  } catch (e) {
+    wrap.innerHTML = `<div class="card"><div class="empty">載入失敗：${esc(e.message || String(e))}</div></div>`;
+    return;
+  }
+
+  const cohortInfo = (cache.rotationOverview || []).find(r => r.rotation_key === rotationKey) || {};
+  const title = `${esc(cohortInfo.cohort_code || cohortInfo.rotation_key || '?')}（${esc(cohortInfo.rotation_title_display || '—')}）`;
+
+  wrap.innerHTML = `
+    <div class="card">
+      <div class="card-title">📊 ${title} · 學員前後測對比</div>
+      <div class="card-sub">同學生 pretest → posttest 的進步幅度。delta = posttest − pretest（百分點）</div>
+      <div id="rotationPairTableWrap">${renderPairTableHTML(pairRows)}</div>
+      <div style="height:300px;margin-top:16px;"><canvas id="rotationPairChart"></canvas></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🎯 ${title} · 主題弱項</div>
+      <div class="card-sub">每個主題分類在 pretest / posttest 的正確率對比</div>
+      <div id="rotationTopicTableWrap">${renderTopicTableHTML(topicRows)}</div>
+    </div>
+  `;
+
+  // 畫 chart
+  renderRotationPairChart(pairRows);
+}
+
+function renderPairTableHTML(rows) {
+  if (!rows || rows.length === 0) {
+    return '<div class="empty">此梯次尚無學員前後測資料。</div>';
+  }
+  // 排序：has_both 優先、其次按 delta_accuracy 降冪
+  const sorted = rows.slice().sort((a, b) => {
+    if (a.has_both !== b.has_both) return a.has_both ? -1 : 1;
+    return (Number(b.delta_accuracy) || -999) - (Number(a.delta_accuracy) || -999);
+  });
+  return `
+    <table>
+      <thead><tr>
+        <th>學生</th>
+        <th>Pre 答題</th>
+        <th>Pre 正確率</th>
+        <th>Post 答題</th>
+        <th>Post 正確率</th>
+        <th>Δ 進步</th>
+      </tr></thead>
+      <tbody>
+        ${sorted.map(r => {
+          const preAcc  = r.pretest_accuracy  == null ? '—' : Number(r.pretest_accuracy).toFixed(1) + '%';
+          const postAcc = r.posttest_accuracy == null ? '—' : Number(r.posttest_accuracy).toFixed(1) + '%';
+          const delta   = r.delta_accuracy    == null ? '—' :
+            (Number(r.delta_accuracy) >= 0 ? '+' : '') + Number(r.delta_accuracy).toFixed(1) + '%';
+          const deltaCls = r.delta_accuracy == null ? '' :
+            (Number(r.delta_accuracy) >= 10 ? 'acc-high' :
+             Number(r.delta_accuracy) >= 0  ? 'acc-mid'  : 'acc-low');
+          return `<tr>
+            <td><b>${esc(r.student_name || r.student_email || '?')}</b></td>
+            <td>${Number(r.pretest_attempts)  || 0}</td>
+            <td>${preAcc}</td>
+            <td>${Number(r.posttest_attempts) || 0}</td>
+            <td>${postAcc}</td>
+            <td class="${deltaCls}"><b>${delta}</b></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderTopicTableHTML(rows) {
+  if (!rows || rows.length === 0) {
+    return '<div class="empty">此梯次尚無主題分類統計（attempts 的 category 都是 NULL？）。</div>';
+  }
+  // group by category，pivot pre/post 兩欄
+  const map = {};
+  rows.forEach(r => {
+    if (!map[r.category]) map[r.category] = { pre: null, post: null };
+    if (r.phase === 'pretest')  map[r.category].pre  = r;
+    if (r.phase === 'posttest') map[r.category].post = r;
+  });
+  // 依 pretest accuracy 由低到高排（最弱在頂）
+  const sortedCats = Object.keys(map).sort((a, b) => {
+    const aAcc = map[a].pre?.accuracy_pct ?? 999;
+    const bAcc = map[b].pre?.accuracy_pct ?? 999;
+    return aAcc - bAcc;
+  });
+  return `
+    <table>
+      <thead><tr>
+        <th>主題 Category</th>
+        <th>Pre 答題</th>
+        <th>Pre 正確率</th>
+        <th>Post 答題</th>
+        <th>Post 正確率</th>
+        <th>Δ 進步</th>
+      </tr></thead>
+      <tbody>
+        ${sortedCats.map(cat => {
+          const p = map[cat].pre, q = map[cat].post;
+          const preAcc  = p ? Number(p.accuracy_pct).toFixed(1) + '%' : '—';
+          const postAcc = q ? Number(q.accuracy_pct).toFixed(1) + '%' : '—';
+          let delta = '—', deltaCls = '';
+          if (p && q) {
+            const d = Number(q.accuracy_pct) - Number(p.accuracy_pct);
+            delta = (d >= 0 ? '+' : '') + d.toFixed(1) + '%';
+            deltaCls = d >= 10 ? 'acc-high' : d >= 0 ? 'acc-mid' : 'acc-low';
+          }
+          return `<tr>
+            <td>${esc(cat)}</td>
+            <td>${p ? Number(p.attempts_count) : 0}</td>
+            <td>${preAcc}</td>
+            <td>${q ? Number(q.attempts_count) : 0}</td>
+            <td>${postAcc}</td>
+            <td class="${deltaCls}"><b>${delta}</b></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderRotationPairChart(rows) {
+  destroyChart('rotationPairChart');
+  if (!rows || rows.length === 0) return;
+  const canvas = document.getElementById('rotationPairChart');
+  if (!canvas) return;
+
+  // 只畫有任一測量的學生
+  const filtered = rows.filter(r => r.pretest_attempts > 0 || r.posttest_attempts > 0);
+  if (filtered.length === 0) return;
+
+  // X 軸學生姓名
+  const labels = filtered.map(r => r.student_name || r.student_email || '?');
+  const preData  = filtered.map(r => r.pretest_accuracy  == null ? null : Number(r.pretest_accuracy));
+  const postData = filtered.map(r => r.posttest_accuracy == null ? null : Number(r.posttest_accuracy));
+
+  charts.rotationPairChart = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Pretest 正確率 (%)',  data: preData,  backgroundColor: 'rgba(99, 132, 255, 0.7)' },
+        { label: 'Posttest 正確率 (%)', data: postData, backgroundColor: 'rgba(46, 204, 113, 0.7)' },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } },
+      },
+      plugins: {
+        legend: { position: 'top' },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => ctx.dataset.label + '：' + (ctx.parsed.y == null ? '—' : ctx.parsed.y.toFixed(1) + '%'),
+          }
+        }
+      }
+    }
   });
 }
 

@@ -722,7 +722,37 @@ CHECK 確保格式一致（5 位數字 或 NULL）。新欄位 nullable 為了�
 - admin Tab 6 做「宣告 vs 實際」對比：列出 `students.cohort_code != v_student_latest_rotation.cohort_code` 的學生
 - 跨梯統計：用 `students.cohort_code` 把學員 group 起來看
 
-#### 7️⃣ exam_sessions INSERT 採 fail-open
+#### 7️⃣ Step 6 — admin Tab 6「Rotation 分析」整合 Step 3 view
+
+**目標**：把 Step 3 的 3 支 view 包成可視化頁面，老師不用打 SQL 也能看每梯次成效。
+
+**頁面結構**：
+- 上半部：**梯次清單表**（v_rotation_cohort_overview）— 點 row 展開下半部
+- 下半部 Section B：**該梯次學員前後測對比**（v_rotation_pre_post_pair）+ Chart.js 柱狀圖
+- 下半部 Section C：**該梯次主題弱項**（v_rotation_topic_stats）pivot 成 pre/post 雙欄
+
+**state 設計**：
+- `selectedRotationKey` — 跨 render 保留選中梯次（切 Tab 回來自動展開）
+- `rotationSearch` — 前端模糊比對 cohort_code / rotation_title / rotation_key
+- `rotationListSort` — 表頭點擊切換排序
+
+**cache 設計**：
+- `rotationOverview` — 一次拉全部梯次
+- `rotationPair[rotation_key]` — lazy fetch per 梯次（只在點開時才拉）
+- `rotationTopic[rotation_key]` — 同上
+
+理由：梯次清單一次拉夠便宜（每梯一 row）；pair/topic 量隨學員數 × 主題數成長，lazy 比較好。
+
+**fail-open 行為**：
+- view fetch 失敗 → 顯示「載入失敗：{error}」+ 重新載入按鈕
+- 沒選梯次 → Section B/C 不渲染（DOM 沒節點）
+- 選的梯次只有 pretest 沒 posttest → table 顯示 `—`、delta 顯示 `—`、chart 只畫 pretest bar
+
+**Chart 設計**：vertical grouped bar（pre/post 並排）。Y 軸 0-100% 固定。Chart.js 沿用既有 admin v1.7 pattern（`maintainAspectRatio:false` + 容器固定高 300px）。
+
+**未動既有 Tab**：Tab 1-5 全程零改動，純加 Tab 6。
+
+#### 8️⃣ exam_sessions INSERT 採 fail-open
 
 INSERT 失敗時不擋學生答題，退回 v1.7 sharedMap 行為：
 
@@ -756,6 +786,7 @@ const session_id = record.session_id || sessionMap[phase];
 | v1.2 | 2026-05 | Part 13 補 v1.8 Step 3（3 支 rotation view + cohort_code + 學生端 5 位數字限制） |
 | v1.3 | 2026-05 | Part 13 補 v1.8 Step 4（v_student_latest_rotation + admin Tab 1 cohort 欄 + 學生年級下拉 C1-PGY2） |
 | v1.4 | 2026-05 | Part 13 補 v1.8 Step 5（students.cohort_code + profile modal 3 欄 + startQuiz 預填 + admin 改抓宣告值） |
+| v1.5 | 2026-05 | Part 13 補 v1.8 Step 6（admin Tab 6 Rotation 分析 + Section A/B/C + Chart.js 柱狀圖） |
 
 ---
 
