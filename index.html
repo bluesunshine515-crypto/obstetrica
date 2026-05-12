@@ -507,6 +507,13 @@ main {
   color: var(--paper);
 }
 .btn-primary:hover { background: var(--ink); }
+/* v1.9: 視覺化 disabled 狀態，避免學生看不出按鈕被擋（例如 practice 模式未答完最後一題） */
+.btn:disabled,
+.btn[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
 
 .btn-secondary {
   background: transparent;
@@ -3498,6 +3505,7 @@ function renderQuestion() {
   if (currentMode === 'practice') {
     document.getElementById('nextBtn').disabled = ans === null;
     document.getElementById('nextBtn').textContent = isLast ? '完成 →' : '下一題 →';
+    document.getElementById('nextBtn').style.display = 'inline-flex';  // v1.9: 修跨模式殘留的 display:none
   } else {
     document.getElementById('nextBtn').disabled = false;
     document.getElementById('nextBtn').style.display = isLast ? 'none' : 'inline-flex';
@@ -3614,6 +3622,7 @@ function nextQuestion() {
     quizState.currentIdx++;
     renderQuestion();
   } else if (quizState.mode === 'practice') {
+    console.log('[nextQuestion] practice 模式最後一題 → 觸發 submitQuiz');
     submitQuiz();
   }
 }
@@ -3682,10 +3691,29 @@ function submitQuiz(timeUp) {
     timeUp: !!timeUp,
     detail
   };
-  saveHistory(record);
-  uploadAttempts(record);
+  // v1.9: 防禦性 — 每步都 try/catch + log。renderResults 失敗時至少 saveHistory 已存。
+  try {
+    saveHistory(record);
+    console.log('[submitQuiz] localStorage saveHistory OK · id=', record.id, '· total=', record.total);
+  } catch (e) {
+    console.error('[submitQuiz] saveHistory failed:', e);
+    alert('紀錄儲存失敗（localStorage 可能滿了）：' + (e?.message || e));
+  }
 
-  renderResults(record);
+  try {
+    uploadAttempts(record);
+  } catch (e) {
+    console.error('[submitQuiz] uploadAttempts threw (fire-and-forget):', e);
+  }
+
+  try {
+    renderResults(record);
+    console.log('[submitQuiz] renderResults OK · 切到結果頁');
+  } catch (e) {
+    console.error('[submitQuiz] renderResults failed:', e);
+    alert('結果頁渲染失敗：' + (e?.message || e) + '\n\n紀錄已存到本機，可從「歷史紀錄」查看。請開 DevTools (F12) Console 截圖給 Claude 看完整 error。');
+    showView('home');
+  }
 }
 
 // ===== RESULTS =====
