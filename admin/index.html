@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="../exam-bank.js"></script>
 <style>
 :root {
   --ink: #1a1d1f;
@@ -67,6 +68,67 @@ main { max-width: 1280px; margin: 0 auto; padding: 24px; }
 }
 .btn:hover { background: #2a2d2f; }
 .btn-secondary { background: var(--card); color: var(--ink); border: 1px solid var(--line); }
+.btn-link {
+  background: none; border: none; padding: 4px 8px; color: var(--gold);
+  cursor: pointer; font: inherit; font-size: 13px; text-decoration: underline;
+}
+.btn-link:hover { color: var(--ink); }
+/* session detail modal (Tab 2) */
+.modal-box-lg { max-width: 880px; width: 92%; max-height: 88vh; overflow-y: auto; padding: 24px 28px; }
+.session-detail-header {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  margin-bottom: 16px; border-bottom: 1px solid var(--line); padding-bottom: 12px;
+}
+.session-detail-header h2 { font-family: 'Noto Serif TC', serif; margin: 0; }
+.session-detail-close {
+  background: none; border: none; font-size: 22px; cursor: pointer;
+  color: var(--ink-soft); padding: 0; width: auto; line-height: 1;
+}
+.session-detail-close:hover { color: var(--rust); }
+.session-detail-summary {
+  display: flex; gap: 24px; flex-wrap: wrap;
+  padding: 12px 16px; background: var(--paper); border-radius: 4px; margin-bottom: 16px;
+}
+.session-detail-summary > div { display: flex; flex-direction: column; gap: 2px; }
+.session-detail-summary-label {
+  color: var(--ink-mute); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+}
+.session-detail-summary-value { font-weight: 600; font-size: 15px; color: var(--ink); }
+.attempt-card {
+  padding: 12px 14px; border: 1px solid var(--line);
+  border-radius: 4px; margin-bottom: 8px;
+}
+.attempt-card.wrong { border-color: var(--rust); background: #fdf5f2; }
+.attempt-card.correct { opacity: 0.55; }
+.attempt-meta {
+  display: flex; gap: 10px; font-size: 12px;
+  color: var(--ink-mute); margin-bottom: 6px; align-items: center;
+}
+.attempt-qid { font-family: monospace; color: var(--gold); font-size: 12px; }
+.attempt-tag {
+  padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500;
+}
+.attempt-tag.wrong { background: var(--rust); color: white; }
+.attempt-tag.correct { background: #4a7c59; color: white; }
+.attempt-question {
+  font-size: 14px; line-height: 1.65; margin-bottom: 10px;
+  color: var(--ink); white-space: pre-wrap;
+}
+.attempt-missing-bank {
+  font-style: italic; color: var(--ink-mute); font-size: 13px; margin-bottom: 8px;
+}
+.attempt-answers { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.attempt-answer-block { padding: 8px 12px; border-radius: 3px; background: var(--paper); }
+.attempt-answer-block.user-wrong { background: #fbe9e1; }
+.attempt-answer-block.correct-ans { background: #e9f1ea; }
+.attempt-answer-label {
+  font-size: 11px; color: var(--ink-mute);
+  text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 2px;
+}
+.attempt-answer-text { font-weight: 500; font-size: 13px; line-height: 1.5; }
+@media (max-width: 600px) {
+  .attempt-answers { grid-template-columns: 1fr; }
+}
 .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
 .kpi {
   background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 18px;
@@ -422,6 +484,17 @@ input[type=range] { accent-color: var(--gold); }
   </div>
 </div>
 
+<!-- Session detail modal (Tab 2: 點 session row 後彈出該場全部答題明細) -->
+<div class="modal-bg" id="sessionDetailModal" onclick="if(event.target===this) closeSessionDetailModal()">
+  <div class="modal-box modal-box-lg">
+    <div class="session-detail-header">
+      <h2>答題明細 <span style="color:var(--ink-mute); font-size:14px; font-weight:400;">Session Detail</span></h2>
+      <button class="session-detail-close" onclick="closeSessionDetailModal()" title="關閉 (Esc)">✕</button>
+    </div>
+    <div id="sessionDetailBody"></div>
+  </div>
+</div>
+
 <script>
 // ===== SUPABASE =====
 const SUPABASE_URL = 'https://faeqleeuisevhuqveilx.supabase.co';
@@ -467,6 +540,7 @@ const cache = {
   studentTopic: {},      // keyed by studentId → v_student_topic_stats rows
   studentWrong: {},      // keyed by studentId → wrong attempts rows
   studentSessions: {},   // keyed by studentId → grouped session rows
+  sessionAttempts: {},   // keyed by `${studentId}_${sessionId}` → attempts rows
   // v1.8 Step 6: Rotation 分析 Tab
   rotationOverview: null,// v_rotation_cohort_overview
   rotationPair: {},      // keyed by rotation_key → v_rotation_pre_post_pair rows
@@ -1150,7 +1224,7 @@ function renderRecentSessions(container, sessions) {
   container.innerHTML = `
     <div class="card">
       <div class="card-title">最近 10 次 Sessions</div>
-      <div class="card-sub">依最後一次作答時間排序</div>
+      <div class="card-sub">依最後一次作答時間排序 · 點「明細」可看該場全部答題</div>
       <table>
         <thead><tr>
           <th>Session</th>
@@ -1159,6 +1233,7 @@ function renderRecentSessions(container, sessions) {
           <th>答題數</th>
           <th>正確率</th>
           <th>最後作答</th>
+          <th>明細</th>
         </tr></thead>
         <tbody>
           ${sessions.map(s => {
@@ -1168,6 +1243,10 @@ function renderRecentSessions(container, sessions) {
               s.phase === 'pretest'  ? 'tag-pre'
               : s.phase === 'posttest' ? 'tag-post'
               : 'tag-practice';
+            // session_id/name 經 JSON.stringify 後再放入 HTML attribute，安全處理引號與特殊字元
+            const sidArg  = JSON.stringify(s.session_id);
+            const nameArg = JSON.stringify(s.name || '');
+            const phaseArg = JSON.stringify(s.phase || '');
             return `
               <tr>
                 <td>${esc(s.name)}</td>
@@ -1181,6 +1260,7 @@ function renderRecentSessions(container, sessions) {
                   </div>
                 </td>
                 <td>${relativeTime(s.last_attempted_at)}</td>
+                <td><button class="btn-link" onclick='showSessionDetailModal(${sidArg}, ${nameArg}, ${phaseArg})'>📋 明細</button></td>
               </tr>`;
           }).join('')}
         </tbody>
@@ -1188,6 +1268,126 @@ function renderRecentSessions(container, sessions) {
     </div>
   `;
 }
+
+// ===== TAB 2 · SESSION DETAIL MODAL =====
+// 點 session row 後拉出該學生在那一場 session 的所有 attempts，含題目本文（從 EXAM_BANK 對應）。
+async function fetchSessionAttempts(studentId, sessionId) {
+  const key = studentId + '_' + sessionId;
+  if (cache.sessionAttempts[key]) return cache.sessionAttempts[key];
+  const { data, error } = await supa
+    .from('attempts')
+    .select('question_id, category, selected_answer, correct_answer, is_correct, attempted_at, time_spent_sec')
+    .eq('student_id', studentId)
+    .eq('session_id', sessionId)
+    .order('attempted_at', { ascending: true });
+  if (error) throw error;
+  cache.sessionAttempts[key] = data || [];
+  return cache.sessionAttempts[key];
+}
+
+async function showSessionDetailModal(sessionId, sessionName, phase) {
+  const studentId = selectedStudentId;
+  const modal = document.getElementById('sessionDetailModal');
+  const body  = document.getElementById('sessionDetailBody');
+  body.innerHTML = '<div class="empty">載入答題明細中…</div>';
+  modal.classList.add('active');
+
+  let attempts;
+  try {
+    attempts = await fetchSessionAttempts(studentId, sessionId);
+  } catch (e) {
+    body.innerHTML = `<div class="empty">載入失敗：${esc(e.message || String(e))}</div>`;
+    return;
+  }
+
+  if (!attempts || attempts.length === 0) {
+    body.innerHTML = '<div class="empty">這個 session 沒有答題紀錄</div>';
+    return;
+  }
+
+  const stu = (cache.overview || []).find(s => s.student_id === studentId);
+  const displayName = stu?.display_name || stu?.email || 'unknown';
+  const total = attempts.length;
+  const correct = attempts.filter(a => a.is_correct).length;
+  const wrong = total - correct;
+  const pct = total > 0 ? Math.round(correct / total * 100) : 0;
+  const phaseLabel = phase === 'pretest' ? '前測' : phase === 'posttest' ? '後測' : '練習';
+  const firstAt = attempts[0]?.attempted_at;
+  const dateStr = firstAt ? new Date(firstAt).toLocaleString('zh-Hant') : '—';
+
+  // EXAM_BANK 由 ../exam-bank.js 載入（學生端共用）。若載入失敗則只顯示題號 + 答案對比。
+  const bank = (window.EXAM_BANK && window.EXAM_BANK.questions) || [];
+  const bankMap = {};
+  bank.forEach(q => { bankMap[q.id] = q; });
+
+  body.innerHTML = `
+    <div class="session-detail-summary">
+      <div><span class="session-detail-summary-label">學生</span><span class="session-detail-summary-value">${esc(displayName)}</span></div>
+      <div><span class="session-detail-summary-label">場次</span><span class="session-detail-summary-value">${esc(sessionName)} · ${phaseLabel}</span></div>
+      <div><span class="session-detail-summary-label">時間</span><span class="session-detail-summary-value">${esc(dateStr)}</span></div>
+      <div><span class="session-detail-summary-label">分數</span><span class="session-detail-summary-value">${correct} / ${total} · ${pct}%</span></div>
+      <div><span class="session-detail-summary-label">答錯</span><span class="session-detail-summary-value" style="color:var(--rust);">${wrong}</span></div>
+    </div>
+    <div>
+      ${attempts.map(a => renderAttemptCard(a, bankMap[a.question_id])).join('')}
+    </div>
+  `;
+}
+
+function renderAttemptCard(a, q) {
+  const isCorrect = !!a.is_correct;
+  const cls = isCorrect ? 'correct' : 'wrong';
+  const tag = isCorrect
+    ? '<span class="attempt-tag correct">✓ 答對</span>'
+    : '<span class="attempt-tag wrong">✗ 答錯</span>';
+  const userAns    = a.selected_answer || '—';
+  const correctAns = a.correct_answer  || '—';
+
+  let questionHtml, userText, correctText;
+  if (q) {
+    questionHtml = `<div class="attempt-question">${esc(q.question || '')}</div>`;
+    userText    = (userAns    !== '—' && q.options?.[userAns])    ? userAns    + ' · ' + q.options[userAns]    : userAns;
+    correctText = (correctAns !== '—' && q.options?.[correctAns]) ? correctAns + ' · ' + q.options[correctAns] : correctAns;
+  } else {
+    questionHtml = '<div class="attempt-missing-bank">⚠ 題庫中找不到此題（可能已從題庫移除或更新）</div>';
+    userText    = userAns;
+    correctText = correctAns;
+  }
+
+  return `
+    <div class="attempt-card ${cls}">
+      <div class="attempt-meta">
+        <code class="attempt-qid">${esc(a.question_id)}</code>
+        <span>${esc(a.category || '—')}</span>
+        ${a.time_spent_sec != null ? `<span>${Number(a.time_spent_sec)}s</span>` : ''}
+        <span style="flex:1"></span>
+        ${tag}
+      </div>
+      ${questionHtml}
+      <div class="attempt-answers">
+        <div class="attempt-answer-block ${isCorrect ? 'correct-ans' : 'user-wrong'}">
+          <div class="attempt-answer-label">學生選</div>
+          <div class="attempt-answer-text">${esc(userText)}</div>
+        </div>
+        <div class="attempt-answer-block correct-ans">
+          <div class="attempt-answer-label">正解</div>
+          <div class="attempt-answer-text">${esc(correctText)}</div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function closeSessionDetailModal() {
+  document.getElementById('sessionDetailModal').classList.remove('active');
+}
+
+// Esc 鍵關閉 session detail modal
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const modal = document.getElementById('sessionDetailModal');
+    if (modal && modal.classList.contains('active')) closeSessionDetailModal();
+  }
+});
 
 // ===== TAB 3: WRONG LIST =====
 let wrongFilters = { major: '', exam: '', search: '' };
