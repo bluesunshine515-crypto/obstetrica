@@ -535,6 +535,7 @@ const cache = {
   overview: null,        // v_student_overview
   latestRotation: null,  // v_student_latest_rotation → 用 student_id 索引
   classTopic: null,      // v_class_topic_stats
+  classTopicByCohort: null, // v_class_topic_stats_by_cohort (v1.9)
   hotspots: null,        // v_misconception_hotspots
   questionStats: null,   // v_question_stats
   studentTopic: {},      // keyed by studentId → v_student_topic_stats rows
@@ -1582,6 +1583,7 @@ async function renderWrongTable() {
 // ===== TAB 4: WEAKNESS ANALYSIS =====
 let weaknessMode = 'class';                                      // 'class' | 'student'
 let weaknessSortAsc = true;                                       // true = 最弱在頂
+let weaknessCohort = '';                                          // '' = 全部（含 practice）；'11506' 等 = 該梯次
 const weaknessMajorFilter = new Set(['婦科', '產科', '其他']);   // 預設全選
 
 async function fetchClassTopicStats() {
@@ -1598,6 +1600,23 @@ async function fetchClassTopicStats() {
     unique_students: Number(r.unique_students) || 0,
   }));
   return cache.classTopic;
+}
+
+// v1.9: 帶 cohort 維度的班級 topic stats。一次拉全部 cohort，前端 filter。
+async function fetchClassTopicByCohort() {
+  if (cache.classTopicByCohort) return cache.classTopicByCohort;
+  const { data, error } = await supa.from('v_class_topic_stats_by_cohort').select('*');
+  if (error) throw error;
+  cache.classTopicByCohort = (data || []).map(r => ({
+    cohort_code: r.cohort_code,
+    major_topic: r.major_topic,
+    sub_topic:   r.sub_topic,
+    total:       Number(r.total_attempts) || 0,
+    correct:     Number(r.correct) || 0,
+    accuracy:    toPct(r.class_accuracy),
+    unique_students: Number(r.unique_students) || 0,
+  }));
+  return cache.classTopicByCohort;
 }
 
 async function renderWeakness() {
@@ -1621,6 +1640,20 @@ async function renderWeakness() {
     }
   }
 
+  // 班級模式才用得到梯次下拉。一次拉新 view → distinct cohort_code → 排序。
+  // fail-open：v_class_topic_stats_by_cohort 還沒建（migration 沒跑）也要讓既有班級/個別視角能正常運作。
+  let cohortOptions = [];
+  if (weaknessMode === 'class') {
+    try {
+      const rows = await fetchClassTopicByCohort();
+      cohortOptions = [...new Set((rows || []).map(r => r.cohort_code).filter(Boolean))].sort();
+    } catch (e) {
+      console.warn('[weakness] fetchClassTopicByCohort failed, cohort dropdown will be empty:', e);
+    }
+    // 若舊選的 cohort 不在新清單中（例：該梯尚無資料）→ 退回「全部」
+    if (weaknessCohort && !cohortOptions.includes(weaknessCohort)) weaknessCohort = '';
+  }
+
   panel.innerHTML = `
     <div class="controls">
       <div class="ctrl-group">
@@ -1636,6 +1669,13 @@ async function renderWeakness() {
           ${students.map(s =>
             `<option value="${esc(s.student_id)}">${esc(s.display_name || s.email || '?')} (${esc(s.year || '?')})</option>`
           ).join('')}
+        </select>
+      </div>
+      <div class="ctrl-group" id="weaknessCohortGroup" style="${weaknessMode === 'class' ? '' : 'display:none;'}">
+        <label>梯次 Cohort</label>
+        <select id="weaknessCohortPicker">
+          <option value="">— 全部（含 practice）—</option>
+          ${cohortOptions.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
         </select>
       </div>
       <div class="ctrl-group">
@@ -1669,6 +1709,14 @@ async function renderWeakness() {
       renderWeaknessChart();
     });
   }
+  if (weaknessMode === 'class') {
+    const cohortPicker = document.getElementById('weaknessCohortPicker');
+    cohortPicker.value = weaknessCohort;
+    cohortPicker.addEventListener('change', e => {
+      weaknessCohort = e.target.value;
+      renderWeaknessChart();
+    });
+  }
   document.getElementById('weaknessSortBtn').addEventListener('click', e => {
     weaknessSortAsc = !weaknessSortAsc;
     e.currentTarget.textContent = weaknessSortAsc ? '📉 最弱在頂' : '📈 最強在頂';
@@ -1695,7 +1743,14 @@ async function renderWeaknessChart() {
   let rawRows;
   try {
     if (weaknessMode === 'class') {
-      rawRows = await fetchClassTopicStats();
+      if (weaknessCohort) {
+        // 選了梯次 → 用 v1.9 cohort view，前端 filter cohort_code
+        const all = await fetchClassTopicByCohort();
+        rawRows = (all || []).filter(r => r.cohort_code === weaknessCohort);
+      } else {
+        // 「全部」→ 沿用既有 v_class_topic_stats（全班全時間，含 practice）
+        rawRows = await fetchClassTopicStats();
+      }
     } else {
       const raw = await fetchStudentTopicStats(selectedStudentId);
       rawRows = (raw || []).map(r => ({
@@ -1714,7 +1769,12 @@ async function renderWeaknessChart() {
 
   if (!rawRows || rawRows.length === 0) {
     destroyChart('weaknessChart');
-    wrap.innerHTML = `<div class="empty">${weaknessMode === 'student' ? '該學生尚無答題紀錄' : '尚無班級資料'}</div>`;
+    const emptyMsg = weaknessMode === 'student'
+      ? '該學生尚無答題紀錄'
+      : weaknessCohort
+        ? `梯次 ${esc(weaknessCohort)} 尚無 topic 統計資料（可能未做過 pretest/posttest，或 attempts 沒有 category）`
+        : '尚無班級資料';
+    wrap.innerHTML = `<div class="empty">${emptyMsg}</div>`;
     return;
   }
 
@@ -1734,7 +1794,9 @@ async function renderWeaknessChart() {
 
   const stu = (cache.overview || []).find(s => s.student_id === selectedStudentId);
   const subTitle = weaknessMode === 'class'
-    ? `班級視角 · ${filtered.length} 個子主題`
+    ? (weaknessCohort
+        ? `班級視角 · 梯次 ${esc(weaknessCohort)} · ${filtered.length} 個子主題`
+        : `班級視角 · 全部（含 practice）· ${filtered.length} 個子主題`)
     : `${esc(stu?.display_name || stu?.email || '?')} · ${filtered.length} 個子主題`;
   const sortLabel = weaknessSortAsc ? '正確率升序（最弱在頂）' : '正確率降序（最強在頂）';
 
