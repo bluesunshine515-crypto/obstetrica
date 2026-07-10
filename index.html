@@ -3343,10 +3343,10 @@ async function startQuiz() {
       questions = questions.map(q => shuffleOptions(q, rotationName + ':' + q.id));
     }
   } else {
-    // Random shuffle
-    questions = shuffle([...pool]);
+    // Random shuffle（先濾掉任何缺漏/undefined 的題目，避免壞題流入 shuffleOptions — bug 1）
+    questions = shuffle([...pool].filter(q => q && q.options));
     const cs = document.querySelector('#filterCount .chip.active')?.dataset.count;
-    const count = cs === 'all' ? pool.length : Math.min(parseInt(cs), pool.length);
+    const count = cs === 'all' ? questions.length : Math.min(parseInt(cs), questions.length);
     questions = questions.slice(0, count);
     if (currentMode === 'exam') {
       timeLimit = parseInt(document.getElementById('filterMinutes').value) * 60;
@@ -3398,8 +3398,21 @@ function seededRandom(seed) {
 }
 
 function shuffleOptions(q, seed) {
+  // 防呆：題目或選項缺漏時，安全降級為「不打亂」，避免整個測驗中斷（bug 1）
+  if (!q || !q.options || typeof q.options !== 'object') {
+    console.warn('shuffleOptions: 題目或選項缺漏，跳過打亂', q && q.id);
+    return q ? { ...q, _shuffled: false } : q;
+  }
   const letters = ['A', 'B', 'C', 'D'];
-  const orig = letters.map(l => ({ origLetter: l, text: q.options[l] }));
+  // 只取實際存在、且有內容的選項字母，避免 q.options['D'] 為 undefined 時炸掉
+  const presentLetters = letters.filter(l =>
+    q.options[l] !== undefined && q.options[l] !== null && String(q.options[l]).trim() !== ''
+  );
+  if (presentLetters.length < 2) {
+    console.warn('shuffleOptions: 有效選項少於 2 個，跳過打亂', q.id, q.options);
+    return { ...q, _shuffled: false };
+  }
+  const orig = presentLetters.map(l => ({ origLetter: l, text: q.options[l] }));
   const rng = seededRandom(seed);
   // Fisher-Yates with seeded RNG
   const arr = [...orig];
@@ -3414,6 +3427,11 @@ function shuffleOptions(q, seed) {
     newOptions[newLetter] = item.text;
     if (item.origLetter === q.answer) newAnswer = newLetter;
   });
+  // 若原正解字母不在有效選項內（資料異常），保底不覆蓋原答案，避免整題無解
+  if (newAnswer === null) {
+    console.warn('shuffleOptions: 正解字母對不上任何選項，保留原答案', q.id, q.answer);
+    return { ...q, _shuffled: false };
+  }
   return { ...q, options: newOptions, answer: newAnswer, _origAnswer: q.answer, _shuffled: true };
 }
 
