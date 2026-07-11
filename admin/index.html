@@ -2231,7 +2231,7 @@ async function renderRotationTab() {
 }
 
 function rotAccClass(pct) {   // POST/PRE 門檻：≥85 精熟 / 70-85 接近 / <70 危險
-  return pct >= 85 ? 'high' : pct >= 70 ? 'mid' : 'low';
+  return pct >= 85 ? 'acc-high' : pct >= 70 ? 'acc-mid' : 'acc-low';
 }
 
 function renderRotationList() {
@@ -2274,17 +2274,14 @@ function renderRotationList() {
   }
 
   const cols = [
-    { key: 'cohort_code',            label: '梯次 Cohort' },
-    { key: 'rotation_title_display', label: '原始名稱 Title' },
-    { key: 'student_count',          label: '學員 Students' },
-    { key: 'pretest_session_count',  label: '前測場次 Pre' },
-    { key: 'posttest_session_count', label: '後測場次 Post' },
-    { key: 'total_attempts',         label: '答題數 Attempts' },
-    { key: 'pretest_accuracy',       label: '前測 PRE' },
-    { key: 'posttest_accuracy',      label: '後測 POST' },
-    { key: 'delta_accuracy',         label: '進步 Δ' },
-    { key: 'avg_time_spent_sec',     label: '平均秒/題 Avg s/Q' },
-    { key: 'last_attempt_at',        label: '最近答題 Last' },
+    { key: 'cohort_code',        label: '梯次 Cohort' },
+    { key: 'student_count',      label: '學員 Students' },
+    { key: 'total_attempts',     label: '答題數 Attempts' },
+    { key: 'pretest_accuracy',   label: '前測正確率 PRE' },
+    { key: 'posttest_accuracy',  label: '後測正確率 POST' },
+    { key: 'delta_accuracy',     label: '進步 Δ' },
+    { key: 'avg_time_spent_sec', label: '平均秒/題 Avg s/Q' },
+    { key: 'last_attempt_at',    label: '最近答題 Last' },
   ];
 
   wrap.innerHTML = `
@@ -2303,23 +2300,21 @@ function renderRotationList() {
           const pre  = r.pretest_accuracy  != null ? +Number(r.pretest_accuracy).toFixed(1)  : null;
           const post = r.posttest_accuracy != null ? +Number(r.posttest_accuracy).toFixed(1) : null;
           const dlt  = r.delta_accuracy    != null ? +Number(r.delta_accuracy).toFixed(1)    : null;
-          const preCell  = pre  != null ? `<span class="${rotAccClass(pre)}">${pre}%</span>`   : '—';
-          const postCell = post != null ? `<span class="${rotAccClass(post)}">${post}%</span>` : '—';
-          const dltCell  = dlt  == null ? '—'
-            : dlt > 0 ? `<span class="high">↑ +${dlt}%</span>`
-            : dlt < 0 ? `<span class="low">↓ ${dlt}%</span>`
+          const preTdCls  = pre  != null ? rotAccClass(pre)  : '';
+          const postTdCls = post != null ? rotAccClass(post) : '';
+          const dltTdCls  = dlt == null ? '' : dlt > 0 ? 'acc-high' : dlt < 0 ? 'acc-low' : '';
+          const dltText   = dlt == null ? '—'
+            : dlt > 0 ? `↑ +${dlt}%`
+            : dlt < 0 ? `↓ ${dlt}%`
             : '±0.0%';
           return `
             <tr data-rotation-key="${esc(r.rotation_key)}" class="${selectedCls}">
               <td><b>${esc(r.cohort_code || '—')}</b></td>
-              <td>${esc(r.rotation_title_display || '—')}</td>
               <td>${Number(r.student_count) || 0}</td>
-              <td>${Number(r.pretest_session_count) || 0}</td>
-              <td>${Number(r.posttest_session_count) || 0}</td>
               <td>${(Number(r.total_attempts) || 0).toLocaleString()}</td>
-              <td style="white-space:nowrap; text-align:center;">${preCell}</td>
-              <td style="white-space:nowrap; text-align:center;">${postCell}</td>
-              <td style="white-space:nowrap; text-align:center;">${dltCell}</td>
+              <td class="${preTdCls}"  style="white-space:nowrap; text-align:center;">${pre  != null ? pre  + '%' : '—'}</td>
+              <td class="${postTdCls}" style="white-space:nowrap; text-align:center;">${post != null ? post + '%' : '—'}</td>
+              <td class="${dltTdCls}"  style="white-space:nowrap; text-align:center;">${dltText}</td>
               <td>${avgT}</td>
               <td>${relativeTime(r.last_attempt_at)}</td>
             </tr>`;
