@@ -2230,6 +2230,10 @@ async function renderRotationTab() {
   if (selectedRotationKey) await renderRotationDetail(selectedRotationKey);
 }
 
+function rotAccClass(pct) {   // POST/PRE 門檻：≥85 精熟 / 70-85 接近 / <70 危險
+  return pct >= 85 ? 'high' : pct >= 70 ? 'mid' : 'low';
+}
+
 function renderRotationList() {
   const wrap = document.getElementById('rotationListWrap');
   if (!wrap) return;
@@ -2276,7 +2280,9 @@ function renderRotationList() {
     { key: 'pretest_session_count',  label: '前測場次 Pre' },
     { key: 'posttest_session_count', label: '後測場次 Post' },
     { key: 'total_attempts',         label: '答題數 Attempts' },
-    { key: 'overall_accuracy',       label: '整體正確率 Acc' },
+    { key: 'pretest_accuracy',       label: '前測 PRE' },
+    { key: 'posttest_accuracy',      label: '後測 POST' },
+    { key: 'delta_accuracy',         label: '進步 Δ' },
     { key: 'avg_time_spent_sec',     label: '平均秒/題 Avg s/Q' },
     { key: 'last_attempt_at',        label: '最近答題 Last' },
   ];
@@ -2291,11 +2297,18 @@ function renderRotationList() {
       </tr></thead>
       <tbody>
         ${rows.map(r => {
-          const acc = toPct(r.overall_accuracy);
-          const accCls = accClass(acc);
           const avgT = (r.avg_time_spent_sec == null || isNaN(Number(r.avg_time_spent_sec)))
             ? '—' : Math.round(Number(r.avg_time_spent_sec)) + ' s';
           const selectedCls = selectedRotationKey === r.rotation_key ? 'row-selected' : '';
+          const pre  = r.pretest_accuracy  != null ? +Number(r.pretest_accuracy).toFixed(1)  : null;
+          const post = r.posttest_accuracy != null ? +Number(r.posttest_accuracy).toFixed(1) : null;
+          const dlt  = r.delta_accuracy    != null ? +Number(r.delta_accuracy).toFixed(1)    : null;
+          const preCell  = pre  != null ? `<span class="${rotAccClass(pre)}">${pre}%</span>`   : '—';
+          const postCell = post != null ? `<span class="${rotAccClass(post)}">${post}%</span>` : '—';
+          const dltCell  = dlt  == null ? '—'
+            : dlt > 0 ? `<span class="high">↑ +${dlt}%</span>`
+            : dlt < 0 ? `<span class="low">↓ ${dlt}%</span>`
+            : '±0.0%';
           return `
             <tr data-rotation-key="${esc(r.rotation_key)}" class="${selectedCls}">
               <td><b>${esc(r.cohort_code || '—')}</b></td>
@@ -2304,12 +2317,9 @@ function renderRotationList() {
               <td>${Number(r.pretest_session_count) || 0}</td>
               <td>${Number(r.posttest_session_count) || 0}</td>
               <td>${(Number(r.total_attempts) || 0).toLocaleString()}</td>
-              <td>
-                <div class="acc-cell">
-                  <div class="acc-bar-wrap"><div class="acc-bar-fill ${accCls}" style="width:${acc}%"></div></div>
-                  <div class="acc-text">${acc}%</div>
-                </div>
-              </td>
+              <td style="white-space:nowrap; text-align:center;">${preCell}</td>
+              <td style="white-space:nowrap; text-align:center;">${postCell}</td>
+              <td style="white-space:nowrap; text-align:center;">${dltCell}</td>
               <td>${avgT}</td>
               <td>${relativeTime(r.last_attempt_at)}</td>
             </tr>`;
