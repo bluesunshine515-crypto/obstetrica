@@ -760,6 +760,7 @@ async function renderOverview() {
     panel.innerHTML = '<div class="empty">尚無學生資料</div>';
     return;
   }
+  if (!document.body.contains(panel)) return; // stale: boot() rebuilt DOM mid-await
 
   // KPIs
   const totalStudents = rows.length;
@@ -993,6 +994,7 @@ async function renderStudentDetail() {
     panel.innerHTML = '<div class="empty">尚無學生資料</div>';
     return;
   }
+  if (!document.body.contains(panel)) return; // stale: boot() rebuilt DOM mid-await
 
   // 預設選擇：跨 tab 帶入的 selectedStudentId，否則第一筆
   if (!selectedStudentId || !students.find(s => s.student_id === selectedStudentId)) {
@@ -1043,6 +1045,7 @@ async function renderStudentDetailContent() {
     wrap.innerHTML = `<div class="empty">載入失敗：${esc(e.message || String(e))}</div>`;
     return;
   }
+  if (!document.body.contains(wrap)) return; // stale: boot() rebuilt DOM mid-await
 
   // Layout: profile + radar (上排), sessions (下排)
   wrap.innerHTML = `
@@ -1653,6 +1656,7 @@ async function renderWeakness() {
     // 若舊選的 cohort 不在新清單中（例：該梯尚無資料）→ 退回「全部」
     if (weaknessCohort && !cohortOptions.includes(weaknessCohort)) weaknessCohort = '';
   }
+  if (!document.body.contains(panel)) return; // stale: boot() rebuilt DOM mid-await
 
   panel.innerHTML = `
     <div class="controls">
@@ -1821,6 +1825,7 @@ async function renderWeaknessChart() {
       </div>
     </div>
   `;
+  if (!document.body.contains(wrap)) return; // stale: boot() rebuilt DOM mid-await
 
   destroyChart('weaknessChart');
   charts.weaknessChart = new Chart(document.getElementById('weaknessChart'), {
@@ -1930,6 +1935,7 @@ async function renderMisconceptions() {
       <div class="empty">目前尚無誘答熱點資料</div>`;
     return;
   }
+  if (!document.body.contains(panel)) return; // stale: boot() rebuilt DOM mid-await
 
   // 動態 exam 選項（從 13 rows 拉）
   const exams = [...new Set(rows.map(r => r.exam).filter(Boolean))].sort();
