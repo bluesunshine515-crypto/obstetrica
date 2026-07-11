@@ -283,6 +283,23 @@ td.acc-low  { color: var(--red); }
   background: rgba(74, 124, 89, 0.10);
   border: 1px solid rgba(74, 124, 89, 0.25);
 }
+/* Question detail expand panel (Tab 3 + Tab 5) */
+.q-expand-btn {
+  background: none; border: 1px solid var(--line); cursor: pointer;
+  color: var(--ink-soft); font-size: 11px; padding: 2px 8px; border-radius: 4px;
+  transition: background 0.15s; white-space: nowrap; flex-shrink: 0;
+}
+.q-expand-btn:hover, .q-expand-btn.open { background: var(--line); color: var(--ink); }
+.q-detail-row > td { padding: 0 !important; border-top: none !important; }
+.q-detail-body { padding: 14px 18px; background: var(--bg); border-top: 2px solid var(--line); }
+.q-detail-question { font-size: 14px; font-weight: 500; color: var(--ink); margin-bottom: 10px; line-height: 1.6; }
+.q-detail-options { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.q-detail-option { display: flex; gap: 8px; padding: 5px 10px; border-radius: 5px; font-size: 13px; color: var(--ink-soft); }
+.q-detail-option.detail-correct { background: rgba(74,124,89,0.12); color: var(--green); font-weight: 600; }
+.q-detail-option.detail-wrong   { background: rgba(192,70,58,0.12); color: var(--red);   font-weight: 600; }
+.q-detail-label { font-weight: 700; min-width: 18px; }
+.q-detail-explanation { font-size: 13px; color: var(--ink-soft); line-height: 1.65; border-top: 1px solid var(--line); padding-top: 8px; margin-top: 4px; }
+.mc-detail-body { padding: 12px 16px; border-top: 1px solid var(--line); margin: 12px -16px -16px; background: var(--bg); border-radius: 0 0 8px 8px; }
 .stats-line {
   display: flex; justify-content: space-between; align-items: center;
   padding: 10px 16px; margin-bottom: 12px;
@@ -559,6 +576,35 @@ let rotationListSort = { key: 'cohort_code', dir: 'asc' };
 // ===== UTILITIES =====
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+// esc() MUST run before mdBold() — XSS safety: injected HTML is escaped first,
+// then only our own **…** markers become <strong>.
+function mdBold(s) {
+  return String(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+}
+function renderQuestionDetail(q, opts = {}) {
+  if (!q) {
+    return `<div class="q-detail-body"><div class="empty" style="padding:6px 0;">⚠ 題庫中找不到此題的詳細資料</div></div>`;
+  }
+  const optKeys = ['A','B','C','D','E'].filter(k => q.options && q.options[k]);
+  const correct  = String(q.answer           || '').toUpperCase();
+  const selected = String(opts.selectedAnswer || '').toUpperCase();
+  const topD     = String(opts.topDistractor  || '').toUpperCase();
+  const optionsHtml = optKeys.map(k => {
+    let cls = '';
+    if (k === correct)                        cls = 'detail-correct';
+    else if (selected && k === selected)      cls = 'detail-wrong';
+    else if (!selected && topD && k === topD) cls = 'detail-wrong';
+    return `<div class="q-detail-option ${cls}"><span class="q-detail-label">${k}</span><span>${esc(q.options[k])}</span></div>`;
+  }).join('');
+  const explanationHtml = q.explanation
+    ? `<div class="q-detail-explanation">${mdBold(esc(q.explanation))}</div>`
+    : '';
+  return `<div class="q-detail-body">
+    <div class="q-detail-question">${esc(q.question || '')}</div>
+    <div class="q-detail-options">${optionsHtml}</div>
+    ${explanationHtml}
+  </div>`;
 }
 function destroyChart(id) {
   if (charts[id]) { charts[id].destroy(); delete charts[id]; }
@@ -1533,6 +1579,10 @@ async function renderWrongTable() {
   const stu = (cache.overview || []).find(s => s.student_id === selectedStudentId);
   const displayName = stu?.display_name || stu?.email || 'unknown';
 
+  const bank = (window.EXAM_BANK && window.EXAM_BANK.questions) || [];
+  const bankMap = {};
+  bank.forEach(q => { bankMap[q.id] = q; });
+
   wrap.innerHTML = `
     <div class="stats-line">
       <span>共 <b>${rows.length}</b> 題錯誤 ｜ 套用篩選後顯示 <b>${filtered.length}</b> 題</span>
@@ -1549,21 +1599,41 @@ async function renderWrongTable() {
               <th>正解</th>
               <th>試卷 Exam</th>
               <th>答錯時間</th>
+              <th></th>
             </tr></thead>
             <tbody>
-              ${filtered.map(r => `
-                <tr>
+              ${filtered.map((r, i) => {
+                const did = `wd-${i}`;
+                return `
+                <tr class="wrong-main-row" data-detail="${did}" style="cursor:pointer;">
                   <td><code>${esc(r.question_id)}</code></td>
                   <td>${esc(r.category || '—')}</td>
                   <td><span class="diff-arrow diff-wrong">${esc(r.selected_answer || '-')}</span></td>
                   <td><span class="diff-arrow diff-correct">${esc(r.correct_answer || '-')}</span></td>
                   <td>${esc(r.exam || '—')}</td>
                   <td>${relativeTime(r.attempted_at)}</td>
-                </tr>`).join('')}
+                  <td style="text-align:center;"><button class="q-expand-btn" data-detail="${did}">▶ 詳解</button></td>
+                </tr>
+                <tr id="${did}" class="q-detail-row" style="display:none;">
+                  <td colspan="7">${renderQuestionDetail(bankMap[r.question_id], { selectedAnswer: r.selected_answer })}</td>
+                </tr>`;
+              }).join('')}
             </tbody>
           </table>
         </div>`}
   `;
+
+  wrap.querySelectorAll('.wrong-main-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const did = row.dataset.detail;
+      const detailRow = document.getElementById(did);
+      if (!detailRow) return;
+      const open = detailRow.style.display !== 'none';
+      detailRow.style.display = open ? 'none' : 'table-row';
+      const btn = row.querySelector('.q-expand-btn');
+      if (btn) { btn.textContent = open ? '▶ 詳解' : '▼ 收合'; btn.classList.toggle('open', !open); }
+    });
+  });
 
   const btn = document.getElementById('wrongExportBtn');
   if (btn && !btn.disabled) {
@@ -2016,6 +2086,10 @@ function renderMisconceptionGrid() {
     if (id.startsWith('mc-chart-')) destroyChart(id);
   });
 
+  const bank5 = (window.EXAM_BANK && window.EXAM_BANK.questions) || [];
+  const bankMap5 = {};
+  bank5.forEach(q => { bankMap5[q.id] = q; });
+
   const rows = cache.hotspots || [];
   const filtered = rows.filter(r => {
     if (!misconceptionFilters.majors.has(categoryMajor(r.category))) return false;
@@ -2062,6 +2136,7 @@ function renderMisconceptionGrid() {
                 <span>·</span>
                 <span>${esc(r.exam || '—')}</span>
               </span>
+              <button class="q-expand-btn mc-expand-btn" data-sid="${sid}">▶ 詳解</button>
             </div>
             <div class="mc-acc-row">
               <div class="mc-acc-block">
@@ -2079,6 +2154,9 @@ function renderMisconceptionGrid() {
             <div class="mc-chart-wrap">
               <canvas id="mc-chart-${sid}"></canvas>
             </div>
+            <div id="mc-detail-${sid}" class="mc-detail-body" style="display:none;">
+              ${renderQuestionDetail(bankMap5[r.question_id], { topDistractor: r.top_distractor })}
+            </div>
           </div>`;
       }).join('')}
     </div>
@@ -2087,6 +2165,18 @@ function renderMisconceptionGrid() {
   // 點題號複製
   grid.querySelectorAll('.mc-qid').forEach(el => {
     el.addEventListener('click', () => copyToClipboard(el.dataset.qid));
+  });
+
+  // 展開/收合詳解
+  grid.querySelectorAll('.mc-expand-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const detail = document.getElementById(`mc-detail-${btn.dataset.sid}`);
+      if (!detail) return;
+      const open = detail.style.display !== 'none';
+      detail.style.display = open ? 'none' : 'block';
+      btn.textContent = open ? '▶ 詳解' : '▼ 收合';
+      btn.classList.toggle('open', !open);
+    });
   });
 
   // 每張卡的 chart
