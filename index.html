@@ -486,6 +486,38 @@ main {
   font-family: var(--serif-cn);
 }
 
+.form-static-value {
+  font-family: var(--mono);
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--moss);
+  padding: 0.4rem 0;
+  letter-spacing: 0.05em;
+}
+
+.form-error {
+  font-family: var(--serif-cn);
+  font-size: 0.85rem;
+  color: var(--rust);
+  background: #fff5f5;
+  border: 1px solid var(--rust);
+  border-radius: 3px;
+  padding: 0.7rem 0.9rem;
+  line-height: 1.6;
+}
+
+.upload-warn {
+  font-family: var(--serif-cn);
+  font-size: 0.88rem;
+  color: #7a5800;
+  background: #fffbeb;
+  border: 1px solid #f0c040;
+  border-radius: 3px;
+  padding: 0.8rem 1rem;
+  line-height: 1.7;
+  margin-bottom: 1rem;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -2438,10 +2470,10 @@ main {
       <!-- Rotation specific -->
       <div id="rotationSetup" style="display:none;">
         <div class="filter-row">
-          <div class="filter-row-label">Rotation 名稱<span class="filter-row-label-sub">Rotation Title</span></div>
+          <div class="filter-row-label">梯次<span class="filter-row-label-sub">Cohort</span></div>
           <div>
-            <input type="text" class="form-input" id="rotationName" placeholder="例：11501" pattern="\d{5}" inputmode="numeric" maxlength="5" title="請輸入 5 位數字梯次代碼，例如 11501"/>
-            <div class="form-help">請輸入 5 位數字梯次代碼（例：11501）。同梯前後測會在系統內自動配對。</div>
+            <div id="rotationCohortDisplay" class="form-static-value"></div>
+            <div id="rotationCohortError" class="form-error" style="display:none;"></div>
           </div>
         </div>
         <div class="filter-row">
@@ -2528,6 +2560,7 @@ main {
 
   <!-- RESULTS VIEW -->
   <div class="view" id="view-results">
+    <div id="uploadStatus" style="display:none;"></div>
     <div id="resultsContent"></div>
     <div class="action-bar" style="justify-content:center;">
       <button class="btn btn-secondary" onclick="goHome()">回主選單</button>
@@ -2670,15 +2703,32 @@ async function fetchStudentRow(uid) {
 }
 
 async function uploadAttempts(record) {
-  if (!user || !user.id) return;
+  if (!user || !user.id) return false;
   let phase = 'practice';
   if (record.mode === 'rotation') {
     phase = record.rotationPhase === 'pre' ? 'pretest' : 'posttest';
   }
-  // v1.8: rotation 模式優先用 record 帶的 per-rotation session_id；
-  // 缺值（舊 localStorage record / insert 失敗 fallback / non-rotation）退回 sharedMap
-  const session_id = record.session_id || sessionMap[phase];
-  if (!session_id) { console.warn('no session_id for phase', phase); return; }
+  let session_id = record.session_id || sessionMap[phase];
+
+  // If rotation session was never created (submit-time INSERT failed), retry creating it now
+  if (!session_id && record.mode === 'rotation' && record.rotationName) {
+    try {
+      const { data, error } = await supa.from('exam_sessions').insert({
+        name: `Rotation · ${record.rotationName} · ${phase === 'pretest' ? '前測' : '後測'}`,
+        phase,
+        course: '住院醫師訓練 2026',
+        rotation_title: record.rotationName,
+      }).select('id').single();
+      if (!error && data?.id) {
+        session_id = data.id;
+        console.log('[uploadAttempts] created missing session · id=', session_id);
+      } else {
+        console.warn('[uploadAttempts] session create failed:', error);
+      }
+    } catch(e) { console.warn('[uploadAttempts] session create exception:', e); }
+  }
+
+  if (!session_id) { console.warn('[uploadAttempts] no session_id for phase', phase); return false; }
   const total = record.detail.length || 1;
   const avgSec = Math.round(record.durationSec / total);
   const rows = record.detail.map(d => ({
@@ -2693,10 +2743,17 @@ async function uploadAttempts(record) {
     time_spent_sec: avgSec,
     attempted_at: record.completedAt
   }));
-  const { error } = await supa.from('attempts')
-    .upsert(rows, { onConflict: 'student_id,session_id,question_id' });
-  if (error) console.warn('uploadAttempts', error);
-  else console.log('uploaded', rows.length, 'attempts to', phase);
+
+  const uploadPromise = supa.from('attempts')
+    .upsert(rows, { onConflict: 'student_id,session_id,question_id' })
+    .then(({ error }) => { if (error) throw error; return true; });
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('upload timeout')), 10000)
+  );
+
+  const ok = await Promise.race([uploadPromise, timeoutPromise]);
+  console.log('[uploadAttempts] uploaded', rows.length, 'attempts to phase', phase);
+  return ok;
 }
 
 // ===== STATE =====
@@ -2715,6 +2772,59 @@ const STORAGE_KEYS = {
   DIFF_PREFIX: 'obg_diff_',     // + qid → user difficulty 1-5
   BOOKMARKS: 'obg_bookmarks'    // JSON array of qids
 };
+
+// ===== ADMIN CONTACT (fill in before launch) =====
+const ADMIN_CONTACT = 'bluesunshine515@gmail.com，院內分機 12540';
+
+// ===== PENDING UPLOAD HELPERS =====
+// Key per user prevents cross-user collision on shared devices.
+// Value is an array so multiple failed sessions accumulate without overwriting.
+const PENDING_UPLOAD_RETRY_LIMIT = 3;
+
+function _pendingKey(uid) { return `obg_pending_upload:${uid}`; }
+
+function getPendingUploads(uid) {
+  try { return JSON.parse(localStorage.getItem(_pendingKey(uid)) || '[]'); }
+  catch { return []; }
+}
+
+function addPendingUpload(uid, record) {
+  const arr = getPendingUploads(uid).filter(p => p.record.id !== record.id);
+  arr.push({ record, attempts: 0, savedAt: new Date().toISOString() });
+  try { localStorage.setItem(_pendingKey(uid), JSON.stringify(arr)); }
+  catch(e) { console.warn('[pending] localStorage full, cannot save pending upload', e); }
+}
+
+function removePendingUpload(uid, recordId) {
+  const arr = getPendingUploads(uid).filter(p => p.record.id !== recordId);
+  localStorage.setItem(_pendingKey(uid), JSON.stringify(arr));
+}
+
+async function retryPendingUploads(uid) {
+  const arr = getPendingUploads(uid);
+  if (arr.length === 0) return;
+  console.log('[retry] found', arr.length, 'pending upload(s)');
+  const remaining = [];
+  for (const entry of arr) {
+    if (entry.attempts >= PENDING_UPLOAD_RETRY_LIMIT) {
+      remaining.push(entry); // exceeded limit — keep for manual retry, skip auto
+      continue;
+    }
+    entry.attempts++;
+    try {
+      const ok = await uploadAttempts(entry.record);
+      if (ok) {
+        console.log('[retry] success · record', entry.record.id);
+      } else {
+        remaining.push(entry);
+      }
+    } catch(e) {
+      console.warn('[retry] failed · record', entry.record.id, e);
+      remaining.push(entry);
+    }
+  }
+  localStorage.setItem(_pendingKey(uid), JSON.stringify(remaining));
+}
 
 // ===== INIT =====
 window.addEventListener('DOMContentLoaded', init);
@@ -3001,6 +3111,7 @@ async function init() {
   if (needsProfile) { showProfileModal(); return; }
   renderUserBar();
   renderDashboard();
+  retryPendingUploads(user.id).catch(e => console.warn('[init] retryPendingUploads failed:', e));
 }
 
 // ===== USER MANAGEMENT =====
@@ -3097,6 +3208,7 @@ function renderUserBar() {
 
 // ===== DASHBOARD =====
 function renderDashboard() {
+  if (!user || !user.id) return;
   const history = getHistory();
   const userHistory = history.filter(h => h.userId === user.id);
   document.getElementById('userQuizCount').textContent = userHistory.length;
@@ -3166,7 +3278,7 @@ function goHome() {
   _hideSingleBackRow();
   if (quizTimerInterval) { clearInterval(quizTimerInterval); quizTimerInterval = null; }
   showView('home');
-  renderDashboard();
+  if (user) renderDashboard();
 }
 
 // ===== MODE ENTRY =====
@@ -3186,11 +3298,6 @@ function setupFilterPanel() {
   document.getElementById('filterSubtitle').textContent = titles[currentMode].subtitle;
 
   document.getElementById('rotationSetup').style.display = currentMode === 'rotation' ? 'block' : 'none';
-  // v1.8 Step 5: rotation 模式時預填 user.cohort_code（學生可改 → 跨梯補測用）
-  if (currentMode === 'rotation') {
-    const rn = document.getElementById('rotationName');
-    if (rn && !rn.value && user && user.cohort_code) rn.value = user.cohort_code;
-  }
   document.getElementById('filterTimeRow').style.display = currentMode === 'exam' ? 'grid' : 'none';
   document.getElementById('filterCountRow').style.display = currentMode === 'rotation' ? 'none' : 'grid';
 
@@ -3226,7 +3333,25 @@ function setupFilterPanel() {
     if (defaultChip) defaultChip.classList.add('active');
   }
 
-  updateFilterSummary();   // also sets initial time limit via the exam branch below
+  updateFilterSummary();
+
+  // Rotation cohort check — runs after updateFilterSummary so it can override disabled state
+  if (currentMode === 'rotation') {
+    const display = document.getElementById('rotationCohortDisplay');
+    const errDiv  = document.getElementById('rotationCohortError');
+    if (user && user.cohort_code) {
+      display.textContent = user.cohort_code;
+      errDiv.style.display = 'none';
+    } else {
+      display.textContent = '';
+      const contactLine = ADMIN_CONTACT && ADMIN_CONTACT !== '（待填）'
+        ? `<br>聯絡方式：${esc(ADMIN_CONTACT)}`
+        : '';
+      errDiv.innerHTML = `<strong>您尚未設定所屬梯次，無法使用輪轉評量模式。</strong><br>請聯繫課程管理員，請其在後台「學生管理」中為您的帳號設定梯次代碼。${contactLine}`;
+      errDiv.style.display = 'block';
+      document.getElementById('startQuizBtn').disabled = true;
+    }
+  }
 }
 
 function attachChipHandler(containerId, single) {
@@ -3309,49 +3434,10 @@ async function startQuiz() {
   let rotationSessionId = null;
 
   if (currentMode === 'rotation') {
-    rotationName = document.getElementById('rotationName').value.trim();
-    if (!rotationName) {
-      alert('請填寫 Rotation 名稱才能建立前後測 session');
-      document.getElementById('rotationName').focus();
-      return;
-    }
-    // v1.8 Step 3: 強制 5 位數字梯次代碼，避免同梯次資料被打散
-    if (!/^\d{5}$/.test(rotationName)) {
-      alert('Rotation 名稱請輸入 5 位數字梯次代碼，例：11501');
-      document.getElementById('rotationName').focus();
-      document.getElementById('rotationName').select();
-      return;
-    }
+    rotationName = user.cohort_code;  // always from profile — no manual input
     rotationPhase = document.querySelector('#rotationPhase .chip.active').dataset.phase;
-
-    // v1.8: 為這次 rotation 建立獨立 exam_session，把 rotation_title 寫進 DB
-    // rotation_title_normalized 由 DB trigger 自動算，前端不送
-    // fail-open：insert 失敗就退回 sharedMap 行為，不擋學生答題
-    const dbPhase = rotationPhase === 'pre' ? 'pretest' : 'posttest';
-    if (!rotationName) {
-      console.error('[v1.8] rotation_title 抓不到值！phase=', dbPhase, '可能是 DOM id 又改名了，請檢查 index.html');
-    }
-    console.log('[v1.8] INSERT exam_session with rotation_title:', rotationName, '· phase=', dbPhase);
-    try {
-      const { data, error } = await supa.from('exam_sessions').insert({
-        name: `Rotation · ${rotationName} · ${dbPhase === 'pretest' ? '前測' : '後測'}`,
-        phase: dbPhase,
-        course: '住院醫師訓練 2026',
-        rotation_title: rotationName,
-      }).select('id').single();
-      if (error) {
-        console.warn('[v1.8] exam_sessions insert failed, fallback to sharedMap:', error);
-      } else {
-        rotationSessionId = data?.id || null;
-        console.log('[v1.8] exam_session created · id=', rotationSessionId);
-      }
-    } catch (e) {
-      console.warn('[v1.8] exam_sessions insert exception, fallback to sharedMap:', e);
-    }
-
-    // Use all questions in pool, deterministic order based on rotation name (so pre/post matches)
+    // exam_session INSERT moved to submitQuiz to avoid orphan rows from abandoned sessions
     questions = [...pool].sort((a, b) => a.id.localeCompare(b.id));
-    // For post-test: shuffle options using seeded random based on rotation+id
     if (rotationPhase === 'post') {
       questions = questions.map(q => shuffleOptions(q, rotationName + ':' + q.id));
     }
@@ -3685,8 +3771,10 @@ function confirmExit() {
 }
 
 // ===== SUBMIT =====
-function submitQuiz(timeUp) {
+async function submitQuiz(timeUp) {
   if (quizState.submitted) return;
+  if (!user || !user.id) { console.error('[submitQuiz] user null'); goHome(); return; }
+
   // Check unanswered for non-practice
   if (quizState.mode !== 'practice' && !timeUp) {
     const unanswered = quizState.answers.filter(a => a === null).length;
@@ -3711,8 +3799,6 @@ function submitQuiz(timeUp) {
       correctAnswer: q.answer,
       isCorrect,
       hasImage: q.has_image,
-      // v1.4: snapshot the options & question shown at submit time
-      // so that exam/rotation post-mode (shuffled options) review is correct
       displayOptions: { ...q.options },
       displayQuestion: q.question,
       shuffled: !!q._shuffled
@@ -3726,7 +3812,7 @@ function submitQuiz(timeUp) {
     mode: quizState.mode,
     rotationName: quizState.rotationName,
     rotationPhase: quizState.rotationPhase,
-    session_id: quizState.session_id,  // v1.8: 帶到 uploadAttempts
+    session_id: null,  // will be filled by rotation INSERT below or uploadAttempts retry
     total: quizState.questions.length,
     correct,
     completedAt: new Date().toISOString(),
@@ -3734,28 +3820,86 @@ function submitQuiz(timeUp) {
     timeUp: !!timeUp,
     detail
   };
-  // v1.9: 防禦性 — 每步都 try/catch + log。renderResults 失敗時至少 saveHistory 已存。
+
+  // Rotation: INSERT exam_session at submit time (not start) to avoid orphan rows
+  if (record.mode === 'rotation' && record.rotationName) {
+    const dbPhase = record.rotationPhase === 'pre' ? 'pretest' : 'posttest';
+    try {
+      const { data, error } = await supa.from('exam_sessions').insert({
+        name: `Rotation · ${record.rotationName} · ${dbPhase === 'pretest' ? '前測' : '後測'}`,
+        phase: dbPhase,
+        course: '住院醫師訓練 2026',
+        rotation_title: record.rotationName,
+      }).select('id').single();
+      if (!error && data?.id) {
+        record.session_id = data.id;
+        console.log('[submitQuiz] exam_session created · id=', record.session_id);
+      } else {
+        console.warn('[submitQuiz] exam_sessions insert failed (will retry in uploadAttempts):', error);
+      }
+    } catch(e) {
+      console.warn('[submitQuiz] exam_sessions insert exception:', e);
+    }
+  }
+
+  // Save to localStorage first — student data is safe even if upload fails
   try {
     saveHistory(record);
-    console.log('[submitQuiz] localStorage saveHistory OK · id=', record.id, '· total=', record.total);
+    console.log('[submitQuiz] saveHistory OK · id=', record.id, '· total=', record.total);
   } catch (e) {
     console.error('[submitQuiz] saveHistory failed:', e);
-    alert('紀錄儲存失敗（localStorage 可能滿了）：' + (e?.message || e));
+    alert('紀錄儲存失敗（localStorage 可能已滿）：' + (e?.message || e));
   }
 
-  try {
-    uploadAttempts(record);
-  } catch (e) {
-    console.error('[submitQuiz] uploadAttempts threw (fire-and-forget):', e);
-  }
-
+  // Show results immediately — student must never wait for upload
   try {
     renderResults(record);
-    console.log('[submitQuiz] renderResults OK · 切到結果頁');
+    console.log('[submitQuiz] renderResults OK');
   } catch (e) {
     console.error('[submitQuiz] renderResults failed:', e);
-    alert('結果頁渲染失敗：' + (e?.message || e) + '\n\n紀錄已存到本機，可從「歷史紀錄」查看。請開 DevTools (F12) Console 截圖給 Claude 看完整 error。');
+    alert('結果頁渲染失敗：' + (e?.message || e) + '\n\n紀錄已存到本機，可從「歷史紀錄」查看。');
     showView('home');
+    return;
+  }
+
+  // Background upload — save to pending first so a crash/timeout doesn't lose the record
+  addPendingUpload(user.id, record);
+  try {
+    const ok = await uploadAttempts(record);
+    if (ok) {
+      removePendingUpload(user.id, record.id);
+      setUploadStatus('ok');
+    } else {
+      setUploadStatus('fail');
+    }
+  } catch(e) {
+    console.warn('[submitQuiz] upload failed/timeout:', e);
+    setUploadStatus('fail');
+  }
+}
+
+function setUploadStatus(state) {
+  const el = document.getElementById('uploadStatus');
+  if (!el) return;
+  if (state === 'ok') {
+    el.style.display = 'none';
+  } else {
+    el.style.display = 'block';
+    el.innerHTML = `<div class="upload-warn">⚠️ 作答已記錄在裝置，但本次上傳未成功（網路問題或逾時）。下次登入時將自動重試，也可立即點擊「重試上傳」。<br><button class="btn btn-secondary" style="margin-top:0.6rem;padding:0.4rem 1rem;font-size:0.85rem;" onclick="manualRetryUpload()">重試上傳</button></div>`;
+  }
+}
+
+async function manualRetryUpload() {
+  if (!user || !user.id) return;
+  const btn = document.querySelector('#uploadStatus .btn');
+  if (btn) { btn.disabled = true; btn.textContent = '上傳中…'; }
+  await retryPendingUploads(user.id);
+  const remaining = getPendingUploads(user.id);
+  if (remaining.length === 0) {
+    setUploadStatus('ok');
+  } else {
+    if (btn) { btn.disabled = false; btn.textContent = '重試上傳'; }
+    alert('上傳仍未成功，請確認網路連線後再試。下次登入時也會自動重試。');
   }
 }
 
