@@ -3408,9 +3408,16 @@ function seededRandom(seed) {
   for (let i = 0; i < seed.length; i++) {
     h = ((h << 5) - h + seed.charCodeAt(i)) | 0;
   }
+  // | 0 above produces a signed 32-bit int that can be negative.
+  // JS % returns negative for negative dividends, so without this normalization
+  // rng() can return a negative value → Math.floor gives j=-1 → arr[-1]=undefined
+  // → Fisher-Yates poisons the array → "Cannot read properties of undefined (reading 'text')"
+  // Layer 1: clamp h to [0, 233279] so LCG stays non-negative from the start
+  h = ((h % 233280) + 233280) % 233280;
   return () => {
     h = (h * 9301 + 49297) % 233280;
-    return h / 233280;
+    // Layer 2: Math.abs guarantees [0, 1) even if a future h mutation slips negative
+    return Math.abs(h) / 233280;
   };
 }
 
@@ -3434,7 +3441,8 @@ function shuffleOptions(q, seed) {
   // Fisher-Yates with seeded RNG
   const arr = [...orig];
   for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
+    // Layer 3: Math.abs + % (i+1) clamps j to [0, i] even if rng() somehow returns negative
+    const j = Math.floor(Math.abs(rng()) * (i + 1)) % (i + 1);
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   const newOptions = {};
