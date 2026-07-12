@@ -2626,7 +2626,7 @@ main {
 <div class="modal-backdrop" id="profileModal">
   <div class="modal">
     <div class="modal-title">完成個人資料</div>
-    <p class="modal-subtitle">請輸入姓名、年級、當前梯次（之後可從右上角「✏️ 編輯」修改）</p>
+    <p class="modal-subtitle">請輸入姓名與年級（之後可從右上角「✏️ 編輯」修改）</p>
     <div class="form-group">
       <label class="form-label">姓名</label>
       <input type="text" class="form-input" id="profName" placeholder="例：王小明"/>
@@ -2641,12 +2641,21 @@ main {
         <option value="PGY2">PGY2</option>
       </select>
     </div>
-    <div class="form-group">
-      <label class="form-label">當前梯次</label>
-      <input type="text" class="form-input" id="profCohort" placeholder="例：11506" pattern="\d{5}" inputmode="numeric" maxlength="5" title="請輸入 5 位數字梯次代碼"/>
-      <div class="form-help" style="font-size:12px;color:var(--ink-soft);margin-top:4px;">5 位數字（民國年+月份）。跨梯次時請點「✏️ 編輯」更新。</div>
-    </div>
     <button class="btn btn-primary btn-block" onclick="saveProfile()">儲存</button>
+  </div>
+</div>
+
+<!-- COHORT SETUP MODAL: one-time cohort_code entry, cannot be skipped -->
+<div class="modal-backdrop" id="cohortSetupModal">
+  <div class="modal">
+    <div class="modal-title">設定梯次代碼</div>
+    <p class="modal-subtitle" id="cohortSetupSubtitle">請輸入 7 碼梯次代碼，例：1150801（民國年3碼＋月份2碼＋批次2碼）。代碼由老師統一告知，設定後無法自行修改。</p>
+    <div class="form-group">
+      <label class="form-label">梯次代碼</label>
+      <input type="text" class="form-input" id="cohortSetupInput" placeholder="例：1150801" inputmode="numeric" maxlength="7" autocomplete="off"/>
+      <div id="cohortSetupError" class="form-error" style="display:none; margin-top:0.5rem;"></div>
+    </div>
+    <button class="btn btn-primary btn-block" onclick="saveCohortSetup()">確認設定</button>
   </div>
 </div>
 
@@ -3104,11 +3113,13 @@ async function init() {
   };
   saveUser();
   await loadAnnotations(user.id);
-  // v1.8 Step 5: 學生必須有 name + year + cohort_code 才能跳過 modal；老師只看 name
-  const needsProfile = user.role === 'teacher'
-    ? !user.name
-    : (!user.name || !user.year || !user.cohort_code);
-  if (needsProfile) { showProfileModal(); return; }
+  // Check 1: basic profile (name + year)
+  const needsBasic = user.role === 'teacher' ? !user.name : (!user.name || !user.year);
+  if (needsBasic) { showProfileModal(); return; }
+
+  // Check 2: cohort (students only) — one-time dedicated modal, cannot be skipped
+  if (!user.cohort_code && user.role !== 'teacher') { showCohortSetupModal(); return; }
+
   renderUserBar();
   renderDashboard();
   retryPendingUploads(user.id).catch(e => console.warn('[init] retryPendingUploads failed:', e));
@@ -3130,15 +3141,25 @@ function showLoginModal() {
 }
 
 function showProfileModal() {
-  // 預填現有 user 資料；若 year 不在下拉選項內 select 會 fallback 到 placeholder
   if (user) {
     document.getElementById('profName').value = user.name || '';
     const allowedYears = ['C1', 'C2', 'PGY1', 'PGY2'];
     document.getElementById('profYear').value = allowedYears.includes(user.year) ? user.year : '';
-    document.getElementById('profCohort').value = user.cohort_code || '';
   }
   document.getElementById('profileModal').classList.add('active');
   setTimeout(() => document.getElementById('profName').focus(), 100);
+}
+
+function showCohortSetupModal() {
+  document.getElementById('cohortSetupInput').value = '';
+  document.getElementById('cohortSetupError').style.display = 'none';
+  const subtitle = document.getElementById('cohortSetupSubtitle');
+  if (subtitle) {
+    const contact = ADMIN_CONTACT ? `如有疑問請聯繫管理員：${ADMIN_CONTACT}` : '如有疑問請聯繫管理員。';
+    subtitle.textContent = `請輸入 7 碼梯次代碼，例：1150801（民國年3碼＋月份2碼＋批次2碼）。代碼由老師統一告知，設定後無法自行修改。${contact}`;
+  }
+  document.getElementById('cohortSetupModal').classList.add('active');
+  setTimeout(() => document.getElementById('cohortSetupInput').focus(), 100);
 }
 
 async function doLogin() {
@@ -3158,25 +3179,42 @@ async function doLogin() {
 }
 
 async function saveProfile() {
-  const name   = document.getElementById('profName').value.trim();
-  const year   = document.getElementById('profYear').value;
-  const cohort = document.getElementById('profCohort').value.trim();
+  const name = document.getElementById('profName').value.trim();
+  const year = document.getElementById('profYear').value;
   const isTeacher = user.role === 'teacher';
   if (!name) { alert('請輸入姓名'); document.getElementById('profName').focus(); return; }
-  // 老師可以略過年級 / 梯次；學生必須填齊
-  if (!isTeacher) {
-    if (!year)   { alert('請選擇年級'); document.getElementById('profYear').focus(); return; }
-    if (!cohort) { alert('請輸入當前梯次（5 位數字，例：11506）'); document.getElementById('profCohort').focus(); return; }
-    if (!/^\d{5}$/.test(cohort)) { alert('梯次代碼必須是 5 位數字，例：11506'); document.getElementById('profCohort').focus(); document.getElementById('profCohort').select(); return; }
-  }
-  const updateData = { name, year };
-  if (!isTeacher) updateData.cohort_code = cohort;   // 老師不寫 cohort
-  const { error } = await supa.from('students').update(updateData).eq('id', user.id);
+  if (!isTeacher && !year) { alert('請選擇年級'); document.getElementById('profYear').focus(); return; }
+  const { error } = await supa.from('students').update({ name, year }).eq('id', user.id);
   if (error) { alert('儲存失敗：' + error.message); return; }
   user.name = name; user.year = year;
-  if (!isTeacher) user.cohort_code = cohort;
   saveUser();
   document.getElementById('profileModal').classList.remove('active');
+  // Students must also set cohort_code — show dedicated modal if still missing
+  if (!isTeacher && !user.cohort_code) { showCohortSetupModal(); return; }
+  renderUserBar();
+  renderDashboard();
+}
+
+async function saveCohortSetup() {
+  const val = document.getElementById('cohortSetupInput').value.trim();
+  const err = document.getElementById('cohortSetupError');
+  err.style.display = 'none';
+  if (!val) {
+    err.textContent = '請輸入梯次代碼'; err.style.display = 'block'; return;
+  }
+  if (!/^\d{7}$/.test(val)) {
+    err.textContent = '請輸入 7 碼數字，例：1150801（民國年3碼＋月份2碼＋批次2碼）';
+    err.style.display = 'block'; return;
+  }
+  const { error } = await supa.from('students').update({ cohort_code: val }).eq('id', user.id);
+  if (error) {
+    const contact = ADMIN_CONTACT ? `請聯繫管理員（${ADMIN_CONTACT}）。` : '請聯繫管理員。';
+    err.textContent = `儲存失敗：${error.message}。${contact}`;
+    err.style.display = 'block'; return;
+  }
+  user.cohort_code = val;
+  saveUser();
+  document.getElementById('cohortSetupModal').classList.remove('active');
   renderUserBar();
   renderDashboard();
 }
@@ -3196,10 +3234,14 @@ function renderUserBar() {
     : '';
   const editBtn = user.role === 'teacher'
     ? ''
-    : '<button class="btn-text" onclick="showProfileModal()" title="編輯姓名 / 年級 / 梯次" style="margin-right:8px;">✏️ 編輯</button>';
+    : '<button class="btn-text" onclick="showProfileModal()" title="編輯姓名 / 年級" style="margin-right:8px;">✏️ 編輯</button>';
+  const cohortBadge = (user.role !== 'teacher' && user.cohort_code)
+    ? `<span class="user-id-badge">梯次 ${esc(user.cohort_code)}</span>`
+    : '';
   document.getElementById('userBar').innerHTML = `
     <div class="user-info">${esc(tag)}：<span class="user-name">${esc(user.name)}</span></div>
     <span class="user-id-badge">${esc(user.email)}</span>
+    ${cohortBadge}
     ${editBtn}
     ${adminLink}
     <button class="btn-text" onclick="logout()">登出</button>
