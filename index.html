@@ -3218,10 +3218,15 @@ function setupFilterPanel() {
   attachChipHandler('filterCount', true);
   attachChipHandler('rotationPhase', true);
 
-  // For rotation mode: lock major to 全部 by default but allow selection
-  // and set count to "all matched"
+  // Root-cause guard: #filterCount is static HTML (not rebuilt like filterMajor/filterExam),
+  // so if .active is lost (bfcache restore, first-paint race, etc.) setupFilterPanel has no
+  // natural repair path. Explicitly restore here on every entry — both value AND visual.
+  if (!document.querySelector('#filterCount .chip.active')) {
+    const defaultChip = document.querySelector('#filterCount .chip[data-count="10"]');
+    if (defaultChip) defaultChip.classList.add('active');
+  }
 
-  updateFilterSummary();
+  updateFilterSummary();   // also sets initial time limit via the exam branch below
 }
 
 function attachChipHandler(containerId, single) {
@@ -3272,10 +3277,18 @@ function updateFilterSummary() {
   if (currentMode === 'rotation') {
     count = pool.length;  // rotation uses all matched
   } else {
-    const cs = document.querySelector('#filterCount .chip.active')?.dataset.count;
-    count = cs === 'all' ? pool.length : Math.min(parseInt(cs), pool.length);
+    const cs = document.querySelector('#filterCount .chip.active')?.dataset.count || '10';
+    count = cs === 'all' ? pool.length : Math.min(parseInt(cs) || 10, pool.length);
   }
   document.getElementById('filterCountSum').textContent = count;
+
+  // Auto-sync time limit for exam mode (1 min per question).
+  // Fires on every chip click (any filter) + on panel init via setupFilterPanel.
+  // User can still manually override; the override is reset if they change a filter.
+  if (currentMode === 'exam') {
+    const minutesEl = document.getElementById('filterMinutes');
+    if (minutesEl) minutesEl.value = count;
+  }
 
   // Disable start if pool too small
   document.getElementById('startQuizBtn').disabled = pool.length === 0;
@@ -3345,9 +3358,13 @@ async function startQuiz() {
   } else {
     // Random shuffle（先濾掉任何缺漏/undefined 的題目，避免壞題流入 shuffleOptions — bug 1）
     questions = shuffle([...pool].filter(q => q && q.options));
-    const cs = document.querySelector('#filterCount .chip.active')?.dataset.count;
-    const count = cs === 'all' ? questions.length : Math.min(parseInt(cs), questions.length);
+    const cs = document.querySelector('#filterCount .chip.active')?.dataset.count || '10';
+    const count = cs === 'all' ? questions.length : Math.min(parseInt(cs) || 10, questions.length);
     questions = questions.slice(0, count);
+    if (questions.length === 0) {
+      alert('題目池為空，請調整篩選條件後再試');
+      return;
+    }
     if (currentMode === 'exam') {
       timeLimit = parseInt(document.getElementById('filterMinutes').value) * 60;
       // Also shuffle options in exam mode
